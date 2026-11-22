@@ -1,0 +1,98 @@
+{
+  "job_id": "3f9c2a7e1b5d4c08",
+  "status": "running",
+  "stage": "analyzing_candidates",
+  "progress": 0.71,
+  "message": "Analyzing candidate 54/118",
+  "created_at": "2026-11-22T06:40:00Z",
+  "updated_at": "2026-11-22T06:40:48Z",
+  "params": {
+    "max_listeners": 200000,
+    "limit": 20
+  },
+  "playlist": {
+    "id": "37i9dQZF1DXcBWIGoYBM5M",
+    "name": "late night drive",
+    "owner": "someone",
+    "image_url": "https://i.scdn.co/image/ab67706c0000da84example",
+    "total_tracks": 48,
+    "analyzed_tracks": 40,
+    "source": "spotify_embed"
+  },
+  "playlist_profile": {
+    "bpm_median": 92.0,
+    "bpm_range": [
+      78.5,
+      128.0
+    ],
+    "features": {
+      "bpm": 92.0,
+      "pulse_clarity": 0.62,
+      "onset_density": 0.41,
+      "regularity": 0.78,
+      "syncopation": 0.35,
+      "brightness": 0.38,
+      "low_end": 0.66,
+      "energy": 0.58,
+      "dynamics": 0.44
+    },
+    "vibes": [
+      {
+        "id": 0,
+        "label": "92 BPM · dark · bass-heavy",
+        "share": 0.65,
+        "bpm": 92.0,
+        "track_count": 26,
+        "features": {
+          "bpm": 92.0,
+          "pulse_clarity": 0.66,
+          "onset_density": 0.38,
+          "regularity": 0.81,
+          "syncopation": 0.31,
+          "brightness": 0.31,
+          "low_end": 0.72,
+          "energy": 0.6,
+          "dynamics": 0.4
+        },
+        "example_tracks": [
+          {
+            "title": "Example Song",
+            "artist": "Example Artist"
+          },
+          {
+            "title": "Another One",
+            "artist": "Second Artist"
+          }
+        ]
+      },
+      {
+        "id": 1,
+        "label": "124 BPM · bright · busy drums",
+        "share": 0.35,
+        "bpm": 124.0,
+        "track_count": 14,
+        "features": {
+          "bpm": 124.0,
+          "pulse_clarity": 0.55,
+          "onset_density": 0.62,
+          "regularity": 0.72,
+          "syncopation": 0.42,
+          "brightness": 0.61,
+          "low_end": 0.45,
+          "energy": 0.66,
+          "dynamics": 0.38
+        },
+        "example_tracks": [
+          {
+            "title": "Third Song",
+            "artist": "Third Artist"
+          }
+        ]
+      }
+    ]
+  },
+  "results": [],
+  "stats": null,
+  "warnings": [],
+  "error": null
+}

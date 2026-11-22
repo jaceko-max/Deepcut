@@ -1,0 +1,192 @@
+{
+  "job_id": "3f9c2a7e1b5d4c08",
+  "status": "done",
+  "stage": "done",
+  "progress": 1.0,
+  "message": "Found 3 matches",
+  "created_at": "2026-11-22T06:40:00Z",
+  "updated_at": "2026-11-22T06:41:12Z",
+  "params": {
+    "max_listeners": 200000,
+    "limit": 20
+  },
+  "playlist": {
+    "id": "37i9dQZF1DXcBWIGoYBM5M",
+    "name": "late night drive",
+    "owner": "someone",
+    "image_url": "https://i.scdn.co/image/ab67706c0000da84example",
+    "total_tracks": 48,
+    "analyzed_tracks": 40,
+    "source": "spotify_embed"
+  },
+  "playlist_profile": {
+    "bpm_median": 92.0,
+    "bpm_range": [
+      78.5,
+      128.0
+    ],
+    "features": {
+      "bpm": 92.0,
+      "pulse_clarity": 0.62,
+      "onset_density": 0.41,
+      "regularity": 0.78,
+      "syncopation": 0.35,
+      "brightness": 0.38,
+      "low_end": 0.66,
+      "energy": 0.58,
+      "dynamics": 0.44
+    },
+    "vibes": [
+      {
+        "id": 0,
+        "label": "92 BPM · dark · bass-heavy",
+        "share": 0.65,
+        "bpm": 92.0,
+        "track_count": 26,
+        "features": {
+          "bpm": 92.0,
+          "pulse_clarity": 0.66,
+          "onset_density": 0.38,
+          "regularity": 0.81,
+          "syncopation": 0.31,
+          "brightness": 0.31,
+          "low_end": 0.72,
+          "energy": 0.6,
+          "dynamics": 0.4
+        },
+        "example_tracks": [
+          {
+            "title": "Example Song",
+            "artist": "Example Artist"
+          },
+          {
+            "title": "Another One",
+            "artist": "Second Artist"
+          }
+        ]
+      },
+      {
+        "id": 1,
+        "label": "124 BPM · bright · busy drums",
+        "share": 0.35,
+        "bpm": 124.0,
+        "track_count": 14,
+        "features": {
+          "bpm": 124.0,
+          "pulse_clarity": 0.55,
+          "onset_density": 0.62,
+          "regularity": 0.72,
+          "syncopation": 0.42,
+          "brightness": 0.61,
+          "low_end": 0.45,
+          "energy": 0.66,
+          "dynamics": 0.38
+        },
+        "example_tracks": [
+          {
+            "title": "Third Song",
+            "artist": "Third Artist"
+          }
+        ]
+      }
+    ]
+  },
+  "results": [
+    {
+      "rank": 1,
+      "deezer_id": 1234567,
+      "title": "Undertow",
+      "artist": "Low Hum Collective",
+      "album": "Night Shapes",
+      "artwork_url": "https://e-cdns-images.dzcdn.net/images/cover/00000000000000000000000000000001/250x250-000000-80-0-0.jpg",
+      "preview_url": "https://cdnt-preview.dzcdn.net/api/1/1/a/b/c/0/example1.mp3?hdnea=exp=1795330520~acl=x~hmac=y",
+      "preview_proxy_url": "/api/preview/1234567",
+      "deezer_url": "https://www.deezer.com/track/1234567",
+      "spotify_search_url": "https://open.spotify.com/search/Low%20Hum%20Collective%20Undertow",
+      "listeners": 48210,
+      "match_score": 91,
+      "bpm": 92.3,
+      "vibe_id": 0,
+      "why": "Same 92 BPM pocket, matching syncopation, darker low end",
+      "source": "similar_artist",
+      "features": {
+        "bpm": 92.3,
+        "pulse_clarity": 0.64,
+        "onset_density": 0.36,
+        "regularity": 0.83,
+        "syncopation": 0.33,
+        "brightness": 0.27,
+        "low_end": 0.79,
+        "energy": 0.57,
+        "dynamics": 0.42
+      }
+    },
+    {
+      "rank": 2,
+      "deezer_id": 2345678,
+      "title": "Glass Steps",
+      "artist": "Mira Tal",
+      "album": null,
+      "artwork_url": "https://e-cdns-images.dzcdn.net/images/cover/00000000000000000000000000000002/250x250-000000-80-0-0.jpg",
+      "preview_url": "https://cdnt-preview.dzcdn.net/api/1/1/a/b/c/0/example2.mp3?hdnea=exp=1795330520~acl=x~hmac=y",
+      "preview_proxy_url": "/api/preview/2345678",
+      "deezer_url": "https://www.deezer.com/track/2345678",
+      "spotify_search_url": "https://open.spotify.com/search/Mira%20Tal%20Glass%20Steps",
+      "listeners": 12890,
+      "match_score": 84,
+      "bpm": 61.0,
+      "vibe_id": 0,
+      "why": "Half-time take on your 92 BPM groove, same busy hats",
+      "source": "similar_track",
+      "features": {
+        "bpm": 61.0,
+        "pulse_clarity": 0.58,
+        "onset_density": 0.44,
+        "regularity": 0.76,
+        "syncopation": 0.29,
+        "brightness": 0.35,
+        "low_end": 0.7,
+        "energy": 0.52,
+        "dynamics": 0.47
+      }
+    },
+    {
+      "rank": 3,
+      "deezer_id": 3456789,
+      "title": "Brightline",
+      "artist": "Oskar Venn",
+      "album": "Tilt",
+      "artwork_url": "https://e-cdns-images.dzcdn.net/images/cover/00000000000000000000000000000003/250x250-000000-80-0-0.jpg",
+      "preview_url": "https://cdnt-preview.dzcdn.net/api/1/1/a/b/c/0/example3.mp3?hdnea=exp=1795330520~acl=x~hmac=y",
+      "preview_proxy_url": "/api/preview/3456789",
+      "deezer_url": "https://www.deezer.com/track/3456789",
+      "spotify_search_url": "https://open.spotify.com/search/Oskar%20Venn%20Brightline",
+      "listeners": 153000,
+      "match_score": 77,
+      "bpm": 125.1,
+      "vibe_id": 1,
+      "why": "Near your 124 BPM, punchier beat",
+      "source": "tag",
+      "features": {
+        "bpm": 125.1,
+        "pulse_clarity": 0.71,
+        "onset_density": 0.6,
+        "regularity": 0.79,
+        "syncopation": 0.4,
+        "brightness": 0.66,
+        "low_end": 0.41,
+        "energy": 0.7,
+        "dynamics": 0.33
+      }
+    }
+  ],
+  "stats": {
+    "candidates_considered": 412,
+    "candidates_analyzed": 118,
+    "filtered_mainstream": 164,
+    "filtered_in_playlist": 37,
+    "no_preview": 21
+  },
+  "warnings": [],
+  "error": null
+}

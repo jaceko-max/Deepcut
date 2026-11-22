@@ -1,0 +1,36 @@
+/** 12000 -> "12K", 1234567 -> "1.2M", 950 -> "950". */
+export function formatCompact(n: number): string {
+  if (!Number.isFinite(n)) return "–";
+  const abs = Math.abs(n);
+  if (abs < 1000) return String(Math.round(n));
+  if (abs < 999_500) {
+    const k = n / 1000;
+    return `${trim(k < 10 ? k.toFixed(1) : String(Math.round(k)))}K`;
+  }
+  const m = n / 1_000_000;
+  return `${trim(m < 10 ? m.toFixed(1) : String(Math.round(m)))}M`;
+}
+
+function trim(s: string): string {
+  return s.includes(".") ? s.replace(/\.?0+$/, "") : s;
+}
+
+/** BPM with at most one decimal, e.g. 92.3 -> "92.3", 92 -> "92". */
+export function formatBpm(bpm: number): string {
+  return trim(bpm.toFixed(1));
+}
+
+export function formatPercent(share: number): string {
+  return `${Math.round(share * 100)}%`;
+}
+
+export const PLAYLIST_REGEX = /(?:playlist[/:])?([A-Za-z0-9]{22})/;
+
+/** Returns the 22-char playlist id or null. Rejects obviously non-playlist input. */
+export function parsePlaylistId(input: string): string | null {
+  const s = input.trim();
+  if (!s) return null;
+  if (/spotify/i.test(s) && !/playlist[/:]/i.test(s)) return null;
+  const m = PLAYLIST_REGEX.exec(s);
+  return m ? m[1] : null;
+}

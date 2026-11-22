@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+/* Deepcut: blacklight / record-store palette. Dark-first, with a "white label" light theme. */
+:root {
+  --bg: #0e0d14;
+  --surface: #17151f;
+  --surface-2: #211e2c;
+  --line: #342f44;
+  --fg: #eeecf6;
+  --fg-muted: #a8a3bd;
+  --accent: #8b6cff;
+  --accent-text: #b4a0ff;
+  --accent-ink: #0e0d14;
+  --stamp: #f2d13b;
+  --stamp-ink: #17130a;
+  --danger: #ff7a8a;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #eeedf3;
+    --surface: #ffffff;
+    --surface-2: #e4e2ec;
+    --line: #c7c3d6;
+    --fg: #15131c;
+    --fg-muted: #565169;
+    --accent: #5a3ce0;
+    --accent-text: #4a2fc4;
+    --accent-ink: #ffffff;
+    --stamp: #f2d13b;
+    --stamp-ink: #17130a;
+    --danger: #b3162f;
+    color-scheme: light;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #eeedf3;
+  --surface: #ffffff;
+  --surface-2: #e4e2ec;
+  --line: #c7c3d6;
+  --fg: #15131c;
+  --fg-muted: #565169;
+  --accent: #5a3ce0;
+  --accent-text: #4a2fc4;
+  --accent-ink: #ffffff;
+  --stamp: #f2d13b;
+  --stamp-ink: #17130a;
+  --danger: #b3162f;
+  color-scheme: light;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-fg: var(--fg);
+  --color-muted: var(--fg-muted);
+  --color-accent: var(--accent);
+  --color-accent-text: var(--accent-text);
+  --color-accent-ink: var(--accent-ink);
+  --color-stamp: var(--stamp);
+  --color-stamp-ink: var(--stamp-ink);
+  --color-danger: var(--danger);
+  --font-display: var(--font-display), ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+}
+
+html { background: var(--bg); }
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-body), ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.55;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+.display { font-family: var(--font-display), ui-sans-serif, system-ui, sans-serif; letter-spacing: -0.02em; }
+.num { font-variant-numeric: tabular-nums; }
+
+:focus-visible { outline: 2px solid var(--accent-text); outline-offset: 3px; border-radius: 4px; }
+
+/* Beat grid: 16 steps, pulses once per bar at load, then rests. */
+@keyframes bar-hit {
+  0%, 100% { transform: scaleY(var(--rest, 0.35)); }
+  12% { transform: scaleY(1); }
+  40% { transform: scaleY(var(--rest, 0.35)); }
+}
+.wave-bar {
+  transform-origin: bottom;
+  transform: scaleY(var(--rest, 0.35));
+  animation: bar-hit 2.4s ease-out 2 both;
+  animation-delay: calc(var(--i) * 70ms);
+}
+@keyframes indeterminate { from { background-position: 0 0; } to { background-position: 28px 0; } }
+.progress-fill {
+  background-image: repeating-linear-gradient(115deg, rgb(255 255 255 / 0.22) 0 7px, transparent 7px 14px);
+  background-color: var(--accent);
+  animation: indeterminate 0.8s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wave-bar { animation: none; }
+  .progress-fill { animation: none; }
+  * { scroll-behavior: auto !important; }
+}
+
+/* Range slider */
+input[type="range"].depth {
+  -webkit-appearance: none; appearance: none; width: 100%; height: 44px; background: transparent; cursor: pointer;
+}
+input[type="range"].depth::-webkit-slider-runnable-track { height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--accent) var(--pos, 65%), var(--line) var(--pos, 65%)); }
+input[type="range"].depth::-moz-range-track { height: 6px; border-radius: 3px; background: var(--line); }
+input[type="range"].depth::-moz-range-progress { height: 6px; border-radius: 3px; background: var(--accent); }
+input[type="range"].depth::-webkit-slider-thumb { -webkit-appearance: none; width: 26px; height: 26px; margin-top: -10px; border-radius: 50%; background: var(--fg); border: 5px solid var(--accent); box-shadow: 0 0 0 4px var(--bg); }
+input[type="range"].depth::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--fg); border: 5px solid var(--accent); }

@@ -1,0 +1,127 @@
+"""Pydantic models. Field names/types are a fixed contract (see PLAN.md section 2)."""
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+Status = Literal["queued", "running", "done", "error"]
+Stage = Literal[
+    "queued", "fetching_playlist", "matching_previews", "analyzing_playlist",
+    "finding_candidates", "analyzing_candidates", "ranking", "done", "error",
+]
+ErrorCode = Literal[
+    "playlist_not_found", "playlist_unavailable", "playlist_empty", "no_previews",
+    "no_candidates", "upstream_error", "internal_error",
+]
+
+
+class AnalyzeRequest(BaseModel):
+    playlist_url: str = Field(max_length=512)
+    max_listeners: int = Field(200000, ge=10000, le=1000000)
+    limit: int = Field(20, ge=5, le=50)
+
+
+class AnalyzeResponse(BaseModel):
+    job_id: str
+    status: Literal["queued"] = "queued"
+    poll_url: str
+
+
+class JobParams(BaseModel):
+    max_listeners: int
+    limit: int
+
+
+class FeatureSummary(BaseModel):
+    bpm: float
+    pulse_clarity: float
+    onset_density: float
+    regularity: float
+    syncopation: float
+    brightness: float
+    low_end: float
+    energy: float
+    dynamics: float
+
+
+class TrackRef(BaseModel):
+    title: str
+    artist: str
+
+
+class Vibe(BaseModel):
+    id: int
+    label: str
+    share: float
+    bpm: float
+    track_count: int
+    features: FeatureSummary
+    example_tracks: list[TrackRef]
+
+
+class PlaylistProfile(BaseModel):
+    bpm_median: float
+    bpm_range: tuple[float, float]
+    features: FeatureSummary
+    vibes: list[Vibe]
+
+
+class PlaylistInfoOut(BaseModel):
+    id: str
+    name: str
+    owner: str | None = None
+    image_url: str | None = None
+    total_tracks: int
+    analyzed_tracks: int
+    source: Literal["spotify_api", "spotify_embed"]
+
+
+class Result(BaseModel):
+    rank: int
+    deezer_id: int
+    title: str
+    artist: str
+    album: str | None = None
+    artwork_url: str | None = None
+    preview_url: str
+    preview_proxy_url: str
+    deezer_url: str
+    spotify_search_url: str
+    listeners: int
+    match_score: int = Field(ge=0, le=100)
+    bpm: float
+    vibe_id: int
+    why: str
+    source: Literal["similar_artist", "similar_track", "tag"]
+    features: FeatureSummary
+
+
+class Stats(BaseModel):
+    candidates_considered: int = 0
+    candidates_analyzed: int = 0
+    filtered_mainstream: int = 0
+    filtered_in_playlist: int = 0
+    no_preview: int = 0
+
+
+class JobError(BaseModel):
+    code: ErrorCode
+    message: str
+
+
+class JobResponse(BaseModel):
+    job_id: str
+    status: Status
+    stage: Stage
+    progress: float
+    message: str | None = None
+    created_at: str
+    updated_at: str
+    params: JobParams
+    playlist: PlaylistInfoOut | None = None
+    playlist_profile: PlaylistProfile | None = None
+    results: list[Result] = Field(default_factory=list)
+    stats: Stats | None = None
+    warnings: list[str] = Field(default_factory=list)
+    error: JobError | None = None

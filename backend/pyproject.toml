@@ -1,0 +1,11 @@
+[project]
+name = "deepcut-backend"
+version = "0.1.0"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-m 'not live' -q"
+markers = ["live: hits real network services (opt-in: pytest -m live)"]
+filterwarnings = ["ignore::DeprecationWarning"]

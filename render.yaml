@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: deepcut-api
+    runtime: docker
+    plan: free
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: LASTFM_API_KEY
+        sync: false
+      - key: SPOTIFY_CLIENT_ID
+        sync: false
+      - key: SPOTIFY_CLIENT_SECRET
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false          # e.g. https://your-app.vercel.app
+      - key: CORS_ORIGIN_REGEX
+        sync: false          # optional, e.g. https://your-app-.*\.vercel\.app for preview deploys
+      - key: SPOTIFY_PLAYLIST_SOURCE
+        value: auto
+      # The free instance has 512 MB RAM and a fraction of a CPU: keep analysis single-file.
+      - key: ANALYSIS_WORKERS
+        value: "1"
+      - key: MAX_CONCURRENT_JOBS
+        value: "1"
+      - key: LOG_LEVEL
+        value: info
