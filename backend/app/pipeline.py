@@ -32,6 +32,7 @@ from app.scoring.normalize import MfccScaler, Norm, normalize
 from app.scoring.score import (Scored, candidate_distance, compute_d_ref, distance, match_score,
                                select_diverse)
 from app.scoring.vibes import build_vibes, centroid_of
+from app.signing import preview_path
 from app.textutil import clean_title, norm_name, norm_title
 
 log = logging.getLogger("deepcut.pipeline")
@@ -330,7 +331,7 @@ class Pipeline:
             summ = n.summary()
             results.append(Result(
                 rank=rank, deezer_id=t.id, title=t.title, artist=t.artist or c.name, album=t.album,
-                artwork_url=t.artwork_url, preview_url=t.preview_url, preview_proxy_url=f"/api/preview/{t.id}",
+                artwork_url=t.artwork_url, preview_url=t.preview_url, preview_proxy_url=preview_path(self.s.settings.preview_secret, t.id),
                 deezer_url=t.link, spotify_search_url=spotify_search_url(t.artist or c.name, t.title),
                 listeners=c.listeners, match_score=sc.score, bpm=summ["bpm"], vibe_id=v.id,
                 why=explain(n, n.bpm_raw, v.centroid, v.bpm), source=c.source, features=FeatureSummary(**summ)))

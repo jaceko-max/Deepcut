@@ -18,6 +18,8 @@ services:
         sync: false          # e.g. https://your-app.vercel.app
       - key: CORS_ORIGIN_REGEX
         sync: false          # optional, e.g. https://your-app-.*\.vercel\.app for preview deploys
+      - key: PREVIEW_SECRET
+        generateValue: true  # signs preview links so they keep working after the free instance restarts
       - key: SPOTIFY_PLAYLIST_SOURCE
         value: auto
       # The free instance has 512 MB RAM and a fraction of a CPU: keep analysis single-file.

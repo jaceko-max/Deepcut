@@ -107,6 +107,7 @@ Open <http://localhost:3000>. With `NEXT_PUBLIC_API_URL` unset, the frontend run
 | `HTTP_USER_AGENT` | `Deepcut/0.1` | |
 | `LOG_LEVEL` | `info` | |
 | `GLOBAL_JOB_LIMIT` | `30` | max analyses started across all clients per 10 minutes (429 `too_many_jobs`) |
+| `PREVIEW_SECRET` | random per start | signs preview links; set a fixed value (Render generates one) so play buttons survive restarts |
 | `ENABLE_DOCS` | unset | set to `1` to serve `/docs`, `/redoc` and `/openapi.json` (off by default) |
 
 ## Deploy

@@ -277,3 +277,24 @@ def test_cors_origins_trailing_slash_stripped(monkeypatch):
     monkeypatch.setattr("app.config.load_env_file", lambda *a, **k: None)
     monkeypatch.setenv("CORS_ORIGINS", "https://a.app/, https://b.app//,")
     assert Settings.from_env().cors_origins == ["https://a.app", "https://b.app"]
+
+
+def test_signed_preview_works_without_job_in_store(client, settings):
+    from app.signing import preview_path
+
+    with respx.mock:
+        respx.get("https://api.deezer.com/track/77").mock(return_value=httpx.Response(200, json={
+            "id": 77, "title": "T", "preview": "https://cdnt-preview.dzcdn.net/s.mp3?hdnea=x", "artist": {"id": 1, "name": "A"}}))
+        r = client.get(preview_path(settings.preview_secret, 77), follow_redirects=False)
+    assert r.status_code == 307 and r.headers["location"].startswith("https://cdnt-preview.dzcdn.net/s.mp3")
+
+
+def test_forged_preview_signature_rejected_without_upstream_call(client, settings):
+    from app.signing import preview_sig
+
+    with respx.mock(assert_all_called=False) as m:
+        route = m.get(url__regex=r"https://api\.deezer\.com/.*").mock(return_value=httpx.Response(200, json={}))
+        bad = client.get("/api/preview/78?sig=" + "0" * 20, follow_redirects=False)
+        other = client.get(f"/api/preview/79?sig={preview_sig(settings.preview_secret, 78)}", follow_redirects=False)
+    assert bad.status_code == 404 and other.status_code == 404
+    assert route.call_count == 0

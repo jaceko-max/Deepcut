@@ -19,6 +19,7 @@ from app.jobs import JobRunner, JobStore, ServerBusy
 from app.models import AnalyzeRequest, AnalyzeResponse, JobResponse
 from app.pipeline import Services, build_services, run_analysis
 from app.ratelimit import IPJobLimiter
+from app.signing import valid_preview_sig
 
 log = logging.getLogger("deepcut")
 
@@ -210,11 +211,12 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
         return job
 
     @app.get("/api/preview/{deezer_id}")
-    async def preview(deezer_id: int, request: Request):
+    async def preview(deezer_id: int, request: Request, sig: str | None = None):
         wait = request.app.state.preview_limiter.check(client_ip(request))
         if wait is not None:
             raise ApiError(429, "too_many_requests", "Too many preview requests. Please slow down.", {"Retry-After": str(wait)})
-        if not request.app.state.store.has_result_id(deezer_id):
+        signed = valid_preview_sig(request.app.state.svc.settings.preview_secret, deezer_id, sig)
+        if not signed and not request.app.state.store.has_result_id(deezer_id):
             raise ApiError(404, "preview_not_found", "No preview available for this track.")
         svc = request.app.state.svc
         try:

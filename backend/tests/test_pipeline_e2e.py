@@ -119,7 +119,7 @@ async def test_full_pipeline_offline(settings, wavs):
     assert [r.rank for r in job.results] == [1, 2, 3]
     assert by_artist["Noise Merchant"].rank == 3
     for r in job.results:
-        assert r.preview_proxy_url == f"/api/preview/{r.deezer_id}"
+        assert r.preview_proxy_url.startswith(f"/api/preview/{r.deezer_id}?sig=")
         assert r.spotify_search_url.startswith("https://open.spotify.com/search/") and " " not in r.spotify_search_url
         assert len(r.why) <= 90 and 0 <= r.match_score <= 100
         assert r.listeners == CANDS[r.artist][0]

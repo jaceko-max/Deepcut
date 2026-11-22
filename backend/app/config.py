@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass, field
 
 VERSION = "0.1.0"
@@ -56,6 +57,7 @@ class Settings:
     preview_window_seconds: int = 60
     max_body_bytes: int = 16 * 1024
     enable_docs: bool = False
+    preview_secret: str = field(default_factory=lambda: secrets.token_hex(16))  # set PREVIEW_SECRET so links survive restarts
     rate_limit_scale: float = 1.0  # multiplies upstream token-bucket capacity (tests raise it)
 
     @property
@@ -85,4 +87,5 @@ class Settings:
             log_level=env("LOG_LEVEL", "info"),
             global_job_limit=_int("GLOBAL_JOB_LIMIT", 30),
             enable_docs=env("ENABLE_DOCS", "").strip().lower() in ("1", "true", "yes"),
+            preview_secret=env("PREVIEW_SECRET", "").strip() or secrets.token_hex(16),
         )

@@ -18,6 +18,21 @@ export function PreviewProvider({ children }: { children: React.ReactNode }) {
   const [playingId, setPlayingId] = useState<number | null>(null);
   const [failedId, setFailedId] = useState<number | null>(null);
   const currentRef = useRef<number | null>(null);
+  const directRef = useRef<string | null>(null);
+
+  // The proxy link can fail if the free server restarted; Deezer's signed URL stays valid for ~15 minutes.
+  const fail = useCallback(() => {
+    const a = audioRef.current;
+    const direct = directRef.current;
+    if (a && direct && a.src !== direct) {
+      directRef.current = null;
+      a.src = direct;
+      a.play().catch(() => {});
+      return;
+    }
+    setFailedId(currentRef.current);
+    setPlayingId(null);
+  }, []);
 
   const toggle = useCallback((r: Result) => {
     const a = audioRef.current;
@@ -29,11 +44,16 @@ export function PreviewProvider({ children }: { children: React.ReactNode }) {
     }
     if (currentRef.current !== r.deezer_id) {
       currentRef.current = r.deezer_id;
-      a.src = previewSrc(r);
+      const src = previewSrc(r);
+      directRef.current = r.preview_url && r.preview_url !== src ? r.preview_url : null;
+      a.src = src;
     }
-    a.play().catch(() => {
-      setFailedId(r.deezer_id);
-      setPlayingId(null);
+    a.play().catch((e: unknown) => {
+      if (e instanceof DOMException && e.name === "NotAllowedError") {
+        setFailedId(r.deezer_id);
+        setPlayingId(null);
+      }
+      // Load failures also fire the <audio> error event, which runs the fallback.
     });
   }, []);
 
@@ -53,10 +73,7 @@ export function PreviewProvider({ children }: { children: React.ReactNode }) {
         onPlay={() => setPlayingId(currentRef.current)}
         onPause={() => setPlayingId(null)}
         onEnded={() => setPlayingId(null)}
-        onError={() => {
-          setFailedId(currentRef.current);
-          setPlayingId(null);
-        }}
+        onError={fail}
       />
     </Ctx.Provider>
   );
