@@ -7,7 +7,7 @@ export function Footer() {
         <p>Previews via Spotify &amp; Deezer · Data from Last.fm</p>
         {repoUrl && (
           <a
-            className="underline decoration-line underline-offset-4 hover:text-fg"
+            className="inline-flex min-h-11 items-center underline decoration-line underline-offset-4 hover:text-fg"
             href={repoUrl}
             target="_blank"
             rel="noreferrer"
