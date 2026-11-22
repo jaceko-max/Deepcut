@@ -20,10 +20,21 @@ CANDS = {
     "Noise Merchant": (20_000, "noise170", 103),
     "Big Star": (5_000_000, "cand90", 104),
     "PlA": (10_000, "cand90", 105),   # artist already in the playlist -> excluded
+    "Reggaeton Kid": (15_000, "cand90", 106),       # off-genre tags -> rejected before Deezer
+    "Gizzard Tribute Band": (8_000, "cand90", 107),  # tribute act -> rejected by name
 }
+LB_SIM = "https://labs.api.listenbrainz.org/similar-artists/json"
+LB_POP = "https://api.listenbrainz.org/1/popularity/artist"
+GENRE_TAGS = [{"name": "seen live", "count": 100}, {"name": "trip hop", "count": 80}, {"name": "downtempo", "count": 50}]
+TAGS = {"Reggaeton Kid": [{"name": "reggaeton", "count": 100}, {"name": "latin", "count": 60}, {"name": "pop", "count": 20}]}
 
 
-def world(wavs, counters):
+def mbid(name: str) -> str:
+    h = f"{abs(hash(name)) % 10**12:012d}"
+    return f"00000000-0000-4000-8000-{h}"
+
+
+def world(wavs, counters, lb_rows=None, lb_status=200, lb_pop=None, bogus=None, dz_fans=None):
     tracks = []
     previews = {}
     for i in range(12):
@@ -48,30 +59,62 @@ def world(wavs, counters):
         m = p["method"]
         if m == "artist.getSimilar":
             return httpx.Response(200, json={"similarartists": {"artist": [
-                {"name": n, "match": "0.8"} for n in CANDS]}})
+                {"name": n, "match": "0.8", "mbid": mbid(n)} for n in CANDS]}})
         if m == "track.getSimilar":
             return httpx.Response(200, json={"similartracks": {"track": []}})
         if m == "artist.getTopTags":
-            return httpx.Response(200, json={"toptags": {"tag": [{"name": "seen live", "count": 100}, {"name": "trip hop", "count": 50}]}})
+            return httpx.Response(200, json={"toptags": {"tag": TAGS.get(p["artist"], GENRE_TAGS)}})
         if m == "tag.getTopArtists":
             return httpx.Response(200, json={"topartists": {"artist": [{"name": "Cand Ninety"}]}})
         if m == "artist.getInfo":
-            return httpx.Response(200, json={"artist": {"stats": {"listeners": str(CANDS[p["artist"]][0])}}})
+            a = p["artist"]
+            counters["info:" + a] += 1
+            listeners = CANDS[a][0] if a in CANDS else 1_000
+            if bogus and a in bogus:  # autocorrect lands on a tiny duplicate page
+                name, small, real = bogus[a]
+                if p["autocorrect"] == "1":
+                    return httpx.Response(200, json={"artist": {"name": name, "stats": {"listeners": str(small)}}})
+                return httpx.Response(200, json={"artist": {"name": a, "mbid": mbid(a), "stats": {"listeners": str(real)}}})
+            return httpx.Response(200, json={"artist": {"mbid": mbid(a), "stats": {"listeners": str(listeners)}}})
         return httpx.Response(200, json={})
     router.get(LFM).mock(side_effect=lfm)
 
+    def lb_sim(request):
+        counters["lb"] += 1
+        if lb_status != 200:
+            return httpx.Response(lb_status, text="down")
+        ref = request.url.params["artist_mbids"]
+        rows = [{"artist_mbid": ref, "name": "itself", "score": 999, "reference_mbid": ref}]  # LB returns the seed
+        rows += [{"artist_mbid": mbid(n), "name": n, "score": sc, "reference_mbid": ref} for n, sc in (lb_rows or [])]
+        return httpx.Response(200, json=rows)
+    router.get(LB_SIM).mock(side_effect=lb_sim)
+
+    def lb_pop_route(request):
+        counters["lbpop"] += 1
+        if lb_status != 200:
+            return httpx.Response(lb_status, text="down")
+        ids = __import__("json").loads(request.content)["artist_mbids"]
+        pop = lb_pop or {}
+        return httpx.Response(200, json=[{"artist_mbid": i, "total_user_count": pop.get(i, 100), "total_listen_count": 1000}
+                                         for i in ids])
+    router.post(LB_POP).mock(side_effect=lb_pop_route)
+
     def dz_artist(request):
         q = request.url.params["q"]
-        return httpx.Response(200, json={"data": [{"id": CANDS[q][2], "name": q}]})
+        return httpx.Response(200, json={"data": [{"id": CANDS[q][2], "name": q, "nb_fan": (dz_fans or {}).get(q, 1000)}]})
     router.get("https://api.deezer.com/search/artist").mock(side_effect=dz_artist)
 
     def dz_top(request):
         did = int(request.url.path.split("/")[2])
         name = next(n for n, v in CANDS.items() if v[2] == did)
-        return httpx.Response(200, json={"data": [{
-            "id": did * 10, "title": f"{name} Song", "duration": 200, "link": f"https://www.deezer.com/track/{did * 10}",
+        track = lambda tid, title, album: {
+            "id": tid, "title": title, "duration": 200, "link": f"https://www.deezer.com/track/{tid}",
             "preview": f"https://cdnt-preview.dzcdn.net/{did}.mp3?hdnea=x", "artist": {"id": did, "name": name},
-            "album": {"title": "Alb", "cover_medium": "https://img/c.jpg"}}]})
+            "album": {"title": album, "cover_medium": "https://img/c.jpg"}}
+        # most popular first: a live take and a Christmas song that the contamination filter must drop
+        return httpx.Response(200, json={"data": [track(did * 10 + 1, f"{name} Song (Live at Levitation)", "Live"),
+                                                  track(did * 10 + 2, "Last Christmas", "Holiday Hits"),
+                                                  track(did * 10, f"{name} Song", "Alb")]})
     router.get(url__regex=r"https://api\.deezer\.com/artist/\d+/top").mock(side_effect=dz_top)
 
     def dz_preview(request):
@@ -83,13 +126,13 @@ def world(wavs, counters):
     return router
 
 
-async def run_once(settings, wavs, counters, limit=10):
+async def run_once(settings, wavs, counters, limit=10, **world_kw):
     svc = build_services(settings)
     store = JobStore(settings)
     job = store.create(200_000, limit)
     rep = Reporter(store, job.job_id)
     try:
-        with world(wavs, counters):
+        with world(wavs, counters, **world_kw):
             await run_analysis(svc, PID, 200_000, limit, rep)
     finally:
         await svc.aclose()
@@ -123,8 +166,68 @@ async def test_full_pipeline_offline(settings, wavs):
         assert r.spotify_search_url.startswith("https://open.spotify.com/search/") and " " not in r.spotify_search_url
         assert len(r.why) <= 90 and 0 <= r.match_score <= 100
         assert r.listeners == CANDS[r.artist][0]
+        assert r.deezer_id % 10 == 0, "live / Christmas versions must be filtered out"
+        assert "trip hop" in r.why or "downtempo" in r.why, r.why
     assert by_artist["Cand Ninety"].vibe_id != by_artist["Cand Onetwenty"].vibe_id
+    assert not [w for w in job.warnings if "ListenBrainz" in w]
     JobResponse.model_validate(job.model_dump(mode="json"))
+
+
+async def test_listenbrainz_candidates_merge_and_boost(settings, wavs):
+    CANDS["LB Only"] = (12_000, "cand120", 108)
+    try:
+        c = Counter()
+        job = await run_once(settings, wavs, c, lb_rows=[("LB Only", 500), ("Cand Ninety", 400), ("Big Star", 300)])
+    finally:
+        del CANDS["LB Only"]
+    assert job.status == "done", job.error
+    by_artist = {r.artist: r for r in job.results}
+    assert "LB Only" in by_artist and by_artist["LB Only"].source == "similar_artist"
+    assert "itself" not in by_artist and "Big Star" not in by_artist
+    assert c["lb"] > 0 and c["lbpop"] > 0
+    assert not [w for w in job.warnings if "ListenBrainz" in w]
+
+
+async def test_listenbrainz_popularity_is_a_second_mainstream_signal(settings, wavs):
+    c = Counter()
+    job = await run_once(settings, wavs, c, lb_pop={mbid("Cand Onetwenty"): 900_000})
+    assert job.status == "done", job.error
+    assert "Cand Onetwenty" not in {r.artist for r in job.results}
+    assert job.stats.filtered_mainstream == 2
+    assert c["info:Cand Onetwenty"] == 0, "Last.fm MBID + ListenBrainz prefilter must skip the getInfo lookup"
+
+
+async def test_listenbrainz_outage_degrades_to_lastfm_only(settings, wavs):
+    c = Counter()
+    job = await run_once(settings, wavs, c, lb_status=503)
+    assert job.status == "done", job.error
+    assert {r.artist for r in job.results} == {"Cand Ninety", "Cand Onetwenty", "Noise Merchant"}
+    assert any("ListenBrainz" in w for w in job.warnings)
+
+
+async def test_progress_messages_count_items(settings, wavs):
+    from app.jobs import JobStore as JS
+    seen = []
+    orig = JS.update
+
+    def spy(self, jid, **fields):
+        orig(self, jid, **fields)
+        j = self.jobs.get(jid)
+        if j:
+            seen.append((j.progress, j.message or ""))
+    JS.update = spy
+    try:
+        job = await run_once(settings, wavs, Counter())
+    finally:
+        JS.update = orig
+    assert job.status == "done"
+    progs = [p for p, _ in seen]
+    assert progs == sorted(progs), "progress must be monotonic"
+    msgs = " | ".join(m for _, m in seen)
+    for label in ("Checking listener counts", "Comparing genre tags", "Looking up previews"):
+        assert re.search(label + r" \d+/\d+", msgs), label
+    mid = [p for p, m in seen if 0.45 < p < 0.55]
+    assert len(set(mid)) >= 5, "progress must advance through the candidate stage"
 
 
 async def test_second_run_hits_feature_cache(settings, wavs):
@@ -151,3 +254,12 @@ async def test_too_few_previews_errors(settings):
             await run_analysis(svc, PID, 200_000, 10, Reporter(store, job.job_id))
     await svc.aclose()
     assert e.value.code == "no_previews"
+
+
+async def test_bogus_autocorrect_and_deezer_fans_are_extra_mainstream_signals(settings, wavs):
+    c = Counter()
+    job = await run_once(settings, wavs, c, bogus={"Cand Ninety": ("Cand Ninetyy", 2_000, 3_000_000)},
+                         dz_fans={"Noise Merchant": 900_000})
+    assert job.status == "done", job.error
+    assert {r.artist for r in job.results} == {"Cand Onetwenty"}
+    assert job.stats.filtered_mainstream == 3  # Big Star (Last.fm), Cand Ninety (exact-name page), Noise Merchant (Deezer)

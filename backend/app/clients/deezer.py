@@ -96,13 +96,18 @@ class DeezerClient:
                 best, best_r = t, r
         return best if best and best_r >= min_ratio else None
 
-    async def find_artist_id(self, name: str) -> int | None:
+    async def find_artist(self, name: str) -> tuple[int | None, int | None]:
+        """(Deezer artist id, nb_fan) for an exact (normalized) name match."""
         d = await self._json("/search/artist", {"q": name, "limit": 5}, 86400)
         want = norm_name(name)
         for a in d.get("data", []) or []:
             if norm_name(a.get("name", "")) == want:
-                return a.get("id")
-        return None
+                fans = a.get("nb_fan")
+                return a.get("id"), (int(fans) if isinstance(fans, (int, float)) else None)
+        return None, None
+
+    async def find_artist_id(self, name: str) -> int | None:
+        return (await self.find_artist(name))[0]
 
     async def artist_top(self, artist_id: int, limit: int = 3, artist_name: str | None = None) -> list[DeezerTrack]:
         d = await self._json(f"/artist/{artist_id}/top", {"limit": limit}, 86400)

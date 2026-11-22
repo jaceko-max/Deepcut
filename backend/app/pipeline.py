@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import random
 import re
 import statistics
+import time
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from urllib.parse import quote
@@ -20,20 +22,24 @@ from app.cache import Cache
 from app.clients.deezer import DeezerClient, DeezerTrack, deezer_body_rate_limited
 from app.clients.http import HttpClient, UpstreamError
 from app.clients.lastfm import LastfmClient
+from app.clients.listenbrainz import ListenBrainzClient
 from app.clients.spotify import (PlaylistData, PlaylistNotFound, PlaylistTrack, PlaylistUnavailable,
                                  SpotifyClient)
 from app.config import Settings
+from app.filters import allowed_categories, artist_is_tribute, is_contaminated
 from app.jobs import Reporter
 from app.models import (FeatureSummary, PlaylistInfoOut, PlaylistProfile, Result, Stats, TrackRef,
                         Vibe as VibeOut)
 from app.ratelimit import TokenBucket
-from app.scoring.explain import explain, vibe_label
+from app.scoring.explain import explain, vibe_labels, with_tags
 from app.scoring.normalize import MfccScaler, Norm, normalize
 from app.scoring.score import (Scored, candidate_distance, compute_d_ref, distance, match_score,
                                select_diverse)
+from app.scoring.tags import (build_profile, shared_tags, similarity, tag_vector, top_profile_tags,
+                               JUNK_TAGS as _TAG_JUNK)
 from app.scoring.vibes import build_vibes, centroid_of
 from app.signing import preview_path
-from app.textutil import clean_title, norm_name, norm_title
+from app.textutil import clean_title, norm_name, norm_title, strict_name
 
 log = logging.getLogger("deepcut.pipeline")
 
@@ -41,9 +47,25 @@ MAX_PLAYLIST_TRACKS = 200
 SAMPLE_SIZE = 40
 MIN_LISTENERS = 500
 LISTENER_BATCH = 40
-MAX_LISTENER_LOOKUPS = 240
-JUNK_TAGS = {"seen live", "favorites", "favourites", "female vocalists", "male vocalists", "spotify",
-             "albums i own", "all", "under 2000 listeners"}
+MAX_LISTENER_LOOKUPS = 120
+MAX_LISTENER_LOOKUPS_HARD = 160
+JUNK_TAGS = _TAG_JUNK  # kept for backwards compatibility; see app/scoring/tags.py
+SEED_TAG_ARTISTS = 25      # playlist artists whose Last.fm tags define the genre profile
+LB_SEEDS = 10              # seed artists sent to ListenBrainz similar-artists
+LB_ROWS_PER_SEED = 100
+LB_TIMEOUT = 30.0          # whole ListenBrainz stage; on timeout we continue Last.fm-only
+LB_USER_SCALE = 10         # Last.fm listeners ~= 10-15x ListenBrainz users (Radiohead, Beach House, ...)
+LB_MAINSTREAM_SLACK = 2.0  # LB is a secondary signal: only reject gross mismatches
+TAG_MIN_SIM = 0.12         # hard reject below this cosine to the playlist/vibe tag profile
+TAG_FULL_SIM = 0.60        # cosine treated as a perfect genre fit in the blended score
+UNTAGGED_MIN_AFFINITY = 0.6  # artists with no usable tags survive only with strong similarity evidence
+UNTAGGED_TAG_SCORE = 0.25
+W_AUDIO, W_TAGS = 0.65, 0.35  # displayed match_score = 0.65*audio + 0.35*100*tag_fit
+DEEZER_FAN_SLACK = 2.0     # reject when Deezer nb_fan > 2x the listener cap
+TRACKS_PER_ARTIST = 5      # Deezer tracks fetched per candidate artist (after filters)
+CLIPS_PER_ARTIST = 2       # analyzed per artist when the budget allows
+MAX_CANDIDATE_CLIPS = 80
+SEED_TRACKS = 12           # track.getSimilar seeds (often empty for new releases; ListenBrainz covers)
 
 
 class PipelineError(Exception):
@@ -63,6 +85,7 @@ class Services:
     executor: object
     client: httpx.AsyncClient
     preview_deezer: DeezerClient | None = None  # separate Deezer bucket for /api/preview lookups
+    listenbrainz: ListenBrainzClient | None = None
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -78,9 +101,11 @@ def build_services(settings: Settings) -> Services:
     lfm = HttpClient(client, TokenBucket(5 * settings.rate_limit_scale, 1.0))
     dz = HttpClient(client, TokenBucket(40 * settings.rate_limit_scale, 5.0), retry_on_body=deezer_body_rate_limited)
     dz_preview = HttpClient(client, TokenBucket(10 * settings.rate_limit_scale, 5.0), retry_on_body=deezer_body_rate_limited)
+    lb = HttpClient(client, TokenBucket(5 * settings.rate_limit_scale, 1.0))
     return Services(settings, cache, SpotifyClient(plain, settings),
                     LastfmClient(lfm, cache, settings.lastfm_api_key), DeezerClient(dz, cache),
-                    plain, AnalysisPool(settings.analysis_workers), client, DeezerClient(dz_preview, cache))
+                    plain, AnalysisPool(settings.analysis_workers), client, DeezerClient(dz_preview, cache),
+                    ListenBrainzClient(lb, cache))
 
 
 def sample_tracks(tracks: list[PlaylistTrack], n: int = SAMPLE_SIZE, seed: int = 42) -> list[PlaylistTrack]:
@@ -109,6 +134,27 @@ def sample_tracks(tracks: list[PlaylistTrack], n: int = SAMPLE_SIZE, seed: int =
     return out
 
 
+NON_ARTIST = re.compile(r"various artists|soundtrack|\bost\b|original (motion picture|cast|score)|grand theft auto|"
+                        r"\bcast of\b|^disney\b|^(the )?(video ?game|movie|film)\b", re.I)
+
+
+def pick_seeds(tracks: list[PlaylistTrack], pl, norms, vibes, small: int = 15, large: int = 20) -> tuple[list[str], Counter]:
+    """Seed artists: PRIMARY artists only (featured credits like SZA on someone else's single are not
+    what the playlist is about), non-artists dropped (soundtracks, game/film titles, tribute acts).
+    Ties - the norm on singleton-heavy playlists - are broken by how close the artist's analyzed track
+    sits to its vibe centroid instead of playlist order; singleton-heavy playlists get more seeds."""
+    counts = Counter(t.primary_artist for t in tracks
+                     if t.primary_artist and not NON_ARTIST.search(t.primary_artist) and not artist_is_tribute(t.primary_artist))
+    best: dict[str, float] = {}
+    for v in vibes:
+        for j in v.members:
+            a = pl[j][0].primary_artist
+            best[a] = min(best.get(a, 9.0), distance(norms[j], v.centroid))
+    order = sorted(counts, key=lambda a: (-counts[a], best.get(a, 9.0), a))
+    singles = sum(1 for n in counts.values() if n == 1) / max(1, len(counts))
+    return order[:large if singles >= 0.6 else small], counts
+
+
 def spotify_search_url(artist: str, title: str) -> str:
     return "https://open.spotify.com/search/" + quote(f"{artist} {title}", safe="-_.!~*'()")
 
@@ -119,13 +165,21 @@ class Cand:
     hits: list = field(default_factory=list)       # (affinity, source)
     tracks: list = field(default_factory=list)     # (affinity, title) from similar_track
     listeners: int = 0
+    origins: set = field(default_factory=set)      # "lastfm" / "listenbrainz"
+    mbid: str | None = None
+    tags: dict | None = None                       # cleaned Last.fm tag vector (None = not fetched)
+    tag_sim: float | None = None                   # best cosine vs playlist/vibe profiles (None = untagged)
+    seeds: set = field(default_factory=set)        # distinct seed artists pointing at this candidate
+    lb_users: int | None = None                    # ListenBrainz total_user_count, if known
 
     @property
     def affinity(self) -> float:
         if not self.hits:
             return 0.0
         sources = {s for _, s in self.hits}
-        return min(1.0, max(a for a, _ in self.hits) + 0.1 * (len(sources) - 1))
+        both = 0.15 if len(self.origins) > 1 else 0.0  # found by Last.fm AND ListenBrainz
+        multi = min(0.2, 0.05 * max(0, len(self.seeds) - 1))  # several seeds agree: strong coherence signal
+        return min(1.0, max(a for a, _ in self.hits) + 0.1 * (len(sources) - 1) + both + multi)
 
     @property
     def source(self) -> str:
@@ -137,6 +191,7 @@ class Pipeline:
     def __init__(self, svc: Services, playlist_id: str, max_listeners: int, limit: int, rep: Reporter):
         self.s, self.pid, self.max_listeners, self.limit, self.rep = svc, playlist_id, max_listeners, limit, rep
         self.dl_sem = asyncio.Semaphore(8)
+        self._ticks: dict[str, int] = {}
 
     # -- audio features -------------------------------------------------
     async def _features(self, key: str, url: str) -> dict | None:
@@ -179,6 +234,8 @@ class Pipeline:
                                 "LASTFM_API_KEY is not set")
 
         # 1. playlist
+        t_start = time.monotonic()
+        marks: dict[str, float] = {}
         rep.stage("fetching_playlist", 0.01, "Reading playlist")
         try:
             data: PlaylistData = await s.spotify.fetch_playlist(self.pid)
@@ -229,83 +286,186 @@ class Pipeline:
         d_ref = compute_d_ref(norms, vibes)
         rep.set_profile(self._profile(pl, norms, vibes))
 
-        # 4/5. seeds + Last.fm
+        # 4/5. seeds + Last.fm + ListenBrainz, genre-tag profile
+        marks["playlist_audio"] = time.monotonic() - t_start
         rep.stage("finding_candidates", 0.45, "Finding similar artists")
-        cands = await self._lastfm_candidates(tracks, pl, norms, vibes)
+        seeds, counts = pick_seeds(tracks, pl, norms, vibes)
+        profiles = await self._tag_profiles(counts, seeds, pl, vibes)
+        cands, seed_mbids = await self._candidates(tracks, pl, norms, vibes, seeds, profiles)
         considered = len(cands)
 
-        # 6. filters
+        # 6. filters: playlist artists, tribute acts, listener cap (Last.fm + ListenBrainz), genre tags
         before = len(cands)
-        cands = {k: c for k, c in cands.items() if k not in playlist_artists and not (set(k.split(" and ")) & playlist_artists)}
+        cands = {k: c for k, c in cands.items()
+                 if k not in playlist_artists and not (set(k.split(" and ")) & playlist_artists)
+                 and not (c.mbid and c.mbid in seed_mbids)}
         filtered_in_playlist = before - len(cands)
-        by_affinity = sorted(cands.values(), key=lambda c: -c.affinity)
-        rep.stage("finding_candidates", 0.50, "Checking listener counts")
+        cands = {k: c for k, c in cands.items() if not artist_is_tribute(c.name)}
+        filtered_mainstream = filtered_genre = 0
+        lb_pop_ok = s.listenbrainz is not None
+        if lb_pop_ok:
+            # ListenBrainz candidates arrive with MBIDs: drop obvious mainstream artists in a few batched
+            # POSTs before spending rate-limited Last.fm lookups on them (Today's Top Hits: 222 of 240
+            # Last.fm lookups used to hit mainstream artists).
+            pre = await self._lb_mainstream([c for c in cands.values() if c.mbid])
+            if pre is None:
+                lb_pop_ok = False
+            else:
+                filtered_mainstream += len(pre)
+                cands = {k: c for k, c in cands.items() if k not in pre}
+        def lookup_order(c: Cand):
+            # Spend rate-limited Last.fm lookups where they are likely to pass the cap: artists that
+            # ListenBrainz already puts under the cap first, unknown next, borderline (1-2x cap) last.
+            if c.lb_users is None:
+                group = 1
+            else:
+                group = 0 if c.lb_users * LB_USER_SCALE <= self.max_listeners else 2
+            return group, -c.affinity
+        by_affinity = sorted(cands.values(), key=lookup_order)
         sem = asyncio.Semaphore(8)
+        n_lookups = min(len(by_affinity), MAX_LISTENER_LOOKUPS_HARD)
 
         async def info(c: Cand):
             async with sem:
                 try:
-                    c.listeners = await s.lastfm.artist_listeners(c.name) or 0
+                    listeners, mbid, resolved = await s.lastfm.artist_info(c.name)
+                    if resolved and strict_name(resolved) != strict_name(c.name):
+                        # Autocorrect can land on a tiny duplicate page ("Florence + The Machine" ->
+                        # "Florence   The Machine", 20k listeners). Check the exact name too; keep the
+                        # larger count so the listener cap stays conservative.
+                        l2, m2, _ = await s.lastfm.artist_info(c.name, autocorrect=0)
+                        if (l2 or 0) > (listeners or 0):
+                            listeners, mbid = l2, m2 or mbid
+                    c.listeners = listeners or 0
+                    c.mbid = c.mbid or mbid
                 except UpstreamError:
                     c.listeners = 0
+                self._tick("Checking listener counts", 0.48, 0.51, min(n_lookups, MAX_LISTENER_LOOKUPS))
 
-        wanted_artists = max(30, 2 * self.limit)
-        ranked: list[Cand] = []
-        keep: list[Cand] = []
-        for start in range(0, min(len(by_affinity), MAX_LISTENER_LOOKUPS), LISTENER_BATCH):
-            batch = by_affinity[start:start + LISTENER_BATCH]
-            await asyncio.gather(*(info(c) for c in batch))
-            ranked += batch
-            keep += [c for c in batch if MIN_LISTENERS <= c.listeners <= self.max_listeners]
-            if len(keep) >= wanted_artists:
-                break
-        filtered_mainstream = sum(1 for c in ranked if c.listeners > self.max_listeners)
-        if not keep:
-            raise PipelineError("no_candidates", "No underground candidates found. Try raising the listener cap.")
+        async def tags_of(c: Cand, total: int):
+            async with sem:
+                try:
+                    c.tags = tag_vector(await s.lastfm.artist_top_tags(c.name))
+                except UpstreamError:
+                    c.tags = {}
+                self._tick("Comparing genre tags", 0.51, 0.53, total)
 
-        # 7. candidate tracks
-        rep.stage("finding_candidates", 0.52, "Looking up previews")
+        # 7. candidate tracks (contamination filters, up to TRACKS_PER_ARTIST per artist). Deezer lookups
+        # start as soon as an artist passes the listener caps, concurrently with its Last.fm tag lookup
+        # (Deezer and Last.fm have separate rate limits); genre-rejected artists' lookups are cancelled.
         tsem = asyncio.Semaphore(8)
-        no_preview = 0
+        no_preview = contaminated = 0
+        allowed = allowed_categories([t.title for t in tracks])
+
+        deezer_big = 0
 
         async def tracks_for(c: Cand) -> list[DeezerTrack]:
-            nonlocal no_preview
+            nonlocal no_preview, contaminated, deezer_big
             async with tsem:
                 found: list[DeezerTrack] = []
                 try:
+                    aid, fans = await s.deezer.find_artist(c.name)
+                    if fans and fans > DEEZER_FAN_SLACK * self.max_listeners:
+                        # Last.fm undercounts some scenes (Latin, Disney, ...): Deezer fans as a third cap
+                        deezer_big += 1
+                        self._tick("Looking up previews", 0.53, 0.55, len(dz_tasks))
+                        return []
                     for _, title in sorted(c.tracks, key=lambda x: -x[0])[:2]:
                         t = await s.deezer.find_track(c.name, title)
                         if t:
                             found.append(t)
-                    if not found:
-                        aid = await s.deezer.find_artist_id(c.name)
-                        if aid:
-                            found = (await s.deezer.artist_top(aid, 3, c.name))[:2]
+                    if aid:
+                        found += await s.deezer.artist_top(aid, 10, c.name)
                 except UpstreamError:
                     pass
                 # Deezer returns features and loose search hits; the listener cap was checked for c.name only.
-                found = [t for t in found
-                         if norm_name(t.artist) == norm_name(c.name)
-                         and norm_name(t.artist) not in playlist_artists
-                         and norm_title(t.title) not in playlist_titles]
-                if not found:
+                out, titles, ids = [], set(), set()
+                for t in found:
+                    nt = norm_title(clean_title(t.title))
+                    if (t.id in ids or nt in titles or norm_name(t.artist) != norm_name(c.name)
+                            or norm_name(t.artist) in playlist_artists or norm_title(t.title) in playlist_titles):
+                        continue
+                    if is_contaminated(t.title, t.album, t.artist, allowed):
+                        contaminated += 1
+                        continue
+                    ids.add(t.id)
+                    titles.add(nt)
+                    out.append(t)
+                if not out:
                     no_preview += 1
-                return found
+                self._tick("Looking up previews", 0.53, 0.55, len(dz_tasks))
+                return out[:TRACKS_PER_ARTIST]
 
-        per = await asyncio.gather(*(tracks_for(c) for c in keep))
-        budget = min(150, max(80, 5 * self.limit))
+        dz_tasks: dict[int, asyncio.Task] = {}
+        wanted_artists = max(30, 2 * self.limit)
+        ranked: list[Cand] = []
+        keep: list[Cand] = []
+        for start in range(0, n_lookups, LISTENER_BATCH):
+            batch = by_affinity[start:start + LISTENER_BATCH]
+            await asyncio.gather(*(info(c) for c in batch))
+            ranked += batch
+            filtered_mainstream += sum(1 for c in batch if c.listeners > self.max_listeners)
+            ok = [c for c in batch if MIN_LISTENERS <= c.listeners <= self.max_listeners]
+            if lb_pop_ok and ok:  # second mainstream signal (MBIDs learned from Last.fm getInfo)
+                big = await self._lb_mainstream([c for c in ok if c.mbid])
+                if big is None:
+                    lb_pop_ok = False
+                else:
+                    filtered_mainstream += len(big)
+                    ok = [c for c in ok if norm_name(c.name) not in big]
+            for c in ok:
+                dz_tasks[id(c)] = asyncio.create_task(tracks_for(c))
+            todo = [c for c in ok if c.tags is None]
+            tags_total = self._ticks.get("Comparing genre tags", 0) + len(todo)
+            await asyncio.gather(*(tags_of(c, tags_total) for c in todo))
+            for c in ok:
+                if c.tags:
+                    c.tag_sim = max([similarity(c.tags, p) for p in profiles["all"]] or [0.0])
+                    if profiles["all"] and c.tag_sim < TAG_MIN_SIM:
+                        filtered_genre += 1
+                        dz_tasks.pop(id(c)).cancel()
+                        continue
+                elif profiles["all"] and c.affinity < UNTAGGED_MIN_AFFINITY and profiles["untagged_share"] < 0.3:
+                    filtered_genre += 1
+                    dz_tasks.pop(id(c)).cancel()
+                    continue
+                keep.append(c)
+            if len(keep) >= wanted_artists:
+                break
+            # Normal budget is MAX_LISTENER_LOOKUPS; keep going (up to the hard cap) only while we
+            # still could not fill the requested number of results.
+            if len(ranked) >= MAX_LISTENER_LOOKUPS and len(keep) >= self.limit + 5:
+                break
+        self.rep.progress(0.53, "Checked listener counts and genre tags")
+        log.info("candidates: considered=%d looked_up=%d kept=%d mainstream=%d off_genre=%d",
+                 considered, len(ranked), len(keep), filtered_mainstream, filtered_genre)
+        if not keep:
+            for t in dz_tasks.values():
+                t.cancel()
+            raise PipelineError("no_candidates", "No underground candidates found. Try raising the listener cap.")
+        keep.sort(key=lambda c: -(c.affinity * (0.5 + (c.tag_sim if c.tag_sim is not None else 0.2))))
+
+        try:
+            per = await asyncio.gather(*(dz_tasks[id(c)] for c in keep))
+        finally:
+            for t in dz_tasks.values():
+                t.cancel()
+        filtered_mainstream += deezer_big
+        # Round-robin: every artist's best-known track first, then 2nd and 3rd tracks while budget allows.
+        budget = MAX_CANDIDATE_CLIPS
         pool: list[tuple[Cand, DeezerTrack]] = []
         seen_ids: set[int] = set()
-        for c, ts in zip(keep, per):
-            for t in ts[:2]:
-                if t.id not in seen_ids:
-                    seen_ids.add(t.id)
-                    pool.append((c, t))
-        pool = pool[:budget]
+        for rnd in range(CLIPS_PER_ARTIST):
+            for c, ts in zip(keep, per):
+                if rnd < len(ts) and ts[rnd].id not in seen_ids and len(pool) < budget:
+                    seen_ids.add(ts[rnd].id)
+                    pool.append((c, ts[rnd]))
+        log.info("candidate clips=%d (artists=%d, contaminated tracks dropped=%d)", len(pool), len(keep), contaminated)
         if not pool:
             raise PipelineError("no_candidates", "No candidate tracks with previews were found.")
 
         # 8. analyze candidates
+        marks["candidates"] = time.monotonic() - t_start
         craws = await self._gather_progress(
             [self._features(f"dz:{t.id}:v{FEATURE_VERSION}", t.preview_url) for _, t in pool],
             "analyzing_candidates", 0.55, 0.95, "Analyzing candidate")
@@ -313,78 +473,177 @@ class Pipeline:
         if not good:
             raise PipelineError("no_candidates", "None of the candidate previews could be analyzed.")
 
-        # 9-11. rank
+        # 9-11. rank: blended audio + genre-tag score; keep each artist's best-matching tracks
+        marks["candidate_audio"] = time.monotonic() - t_start
         rep.stage("ranking", 0.95, "Ranking matches")
         scored: list[Scored] = []
         info_by_key: dict[int, tuple] = {}
         for c, t, r in good:
             n = normalize(r, scaler)
             vid, dc = candidate_distance(n, norms, vibes)
-            sc = Scored(key=t.id, artist=t.artist or c.name, vibe_id=vid, score=match_score(dc, d_ref), affinity=c.affinity)
+            audio = match_score(dc, d_ref)
+            tsim, fit = self._tag_fit(c, vid, profiles)
+            score = int(round(W_AUDIO * audio + W_TAGS * 100 * fit))
+            sc = Scored(key=t.id, artist=t.artist or c.name, vibe_id=vid, score=score, affinity=c.affinity)
             scored.append(sc)
-            info_by_key[t.id] = (c, t, r, n)
+            info_by_key[t.id] = (c, t, r, n, audio, tsim)
+        log.info("d_ref=%.3f audio scores: %s", d_ref, sorted((info_by_key[x.key][4] for x in scored), reverse=True)[:40])
+        # Best-of-N per artist: keep each artist's best-matching analyzed track (not its most popular).
+        # Second tracks only come back if there are too few distinct artists to fill the list.
+        best: dict[str, Scored] = {}
+        for sc in sorted(scored, key=lambda x: -x.rank_score):
+            best.setdefault(sc.artist.lower(), sc)
+        if len(best) >= self.limit:
+            scored = list(best.values())
         chosen = select_diverse(scored, self.limit, {v.id: v.share for v in vibes})
         results: list[Result] = []
         for rank, sc in enumerate(chosen, 1):
-            c, t, r, n = info_by_key[sc.key]
+            c, t, r, n, audio, tsim = info_by_key[sc.key]
             v = vibes[sc.vibe_id]
             summ = n.summary()
+            why = explain(n, n.bpm_raw, v.centroid, v.bpm)
+            if c.tags:
+                prof = profiles["vibe"].get(v.id) or (profiles["all"][0] if profiles["all"] else {})
+                why = with_tags(why, shared_tags(c.tags, prof) or shared_tags(c.tags, profiles["all"][0] if profiles["all"] else {}))
             results.append(Result(
                 rank=rank, deezer_id=t.id, title=t.title, artist=t.artist or c.name, album=t.album,
                 artwork_url=t.artwork_url, preview_url=t.preview_url, preview_proxy_url=preview_path(self.s.settings.preview_secret, t.id),
                 deezer_url=t.link, spotify_search_url=spotify_search_url(t.artist or c.name, t.title),
-                listeners=c.listeners, match_score=sc.score, bpm=summ["bpm"], vibe_id=v.id,
-                why=explain(n, n.bpm_raw, v.centroid, v.bpm), source=c.source, features=FeatureSummary(**summ)))
+                listeners=c.listeners, match_score=max(0, min(100, sc.score)), bpm=summ["bpm"], vibe_id=v.id,
+                why=why, source=c.source, features=FeatureSummary(**summ)))
+            log.info("result %d: %s - %s score=%d audio=%d tag_sim=%s", rank, t.artist, t.title, sc.score, audio,
+                     None if tsim is None else round(tsim, 3))
         stats = Stats(candidates_considered=considered, candidates_analyzed=len(good),
                       filtered_mainstream=filtered_mainstream, filtered_in_playlist=filtered_in_playlist,
                       no_preview=no_preview)
+        log.info("timings (cumulative s): %s, total=%.1f, clips=%d",
+                 {k: round(v, 1) for k, v in marks.items()}, time.monotonic() - t_start, len(pool))
         rep.done(results, stats)
 
     # -- helpers --------------------------------------------------------
+    def _tick(self, label: str, lo: float, hi: float, total: int) -> None:
+        """Advance progress smoothly inside [lo, hi] with an 'x/total' counter (monotonic via the store)."""
+        done = self._ticks.get(label, 0) + 1
+        self._ticks[label] = done
+        total = max(total, done, 1)
+        self.rep.progress(lo + (hi - lo) * done / total, f"{label} {done}/{total}")
+
+    async def _lb_mainstream(self, cs: list[Cand]) -> set[str] | None:
+        """norm names of candidates whose ListenBrainz user count marks them as mainstream;
+        None if ListenBrainz failed (callers then skip the check)."""
+        if not cs:
+            return set()
+        try:
+            pop = await asyncio.wait_for(self.s.listenbrainz.popularity([c.mbid for c in cs]), 20)
+        except Exception as e:  # noqa: BLE001 - never fail a job because of ListenBrainz
+            log.warning("ListenBrainz popularity failed: %s", e)
+            return None
+        for c in cs:
+            if c.mbid in pop:
+                c.lb_users = pop[c.mbid][0]
+        cap = self.max_listeners * LB_MAINSTREAM_SLACK
+        return {norm_name(c.name) for c in cs if c.lb_users is not None and c.lb_users * LB_USER_SCALE > cap}
+
+    def _tag_fit(self, c: Cand, vid: int, profiles: dict) -> tuple[float | None, float]:
+        """(tag similarity used for ranking, 0..1 genre fit). Similarity blends the whole-playlist profile
+        (70%) with the candidate's nearest audio vibe profile (30%): a niche corner of a mixed playlist
+        (two Finnish rap tracks in Today's Top Hits) may pass the hard filter but should rank lower."""
+        if not profiles["all"]:
+            return None, 0.5  # no playlist tags at all: neutral, audio decides
+        if not c.tags:  # small artists are often untagged; neutral when the playlist itself is mostly untagged
+            return None, UNTAGGED_TAG_SCORE if profiles["untagged_share"] < 0.3 else 0.5
+        whole = similarity(c.tags, profiles["all"][0])
+        vp = profiles["vibe"].get(vid)
+        tsim = 0.7 * whole + 0.3 * similarity(c.tags, vp) if vp else whole
+        fit = (tsim - TAG_MIN_SIM) / (TAG_FULL_SIM - TAG_MIN_SIM)
+        return tsim, float(min(1.0, max(0.0, fit)))
+
+    async def _tag_profiles(self, counts: Counter, seeds: list[str], pl, vibes) -> dict:
+        """Last.fm tag profile of the whole playlist and of each audio vibe.
+        profiles["all"] = [whole, *vibe profiles] (hard filter uses the max over these)."""
+        lf = self.s.lastfm
+        artists = list(dict.fromkeys(seeds + [t.primary_artist for t, _ in pl
+                                              if t.primary_artist in counts]))[:SEED_TAG_ARTISTS]
+        sem = asyncio.Semaphore(8)
+
+        async def get(a):
+            async with sem:
+                try:
+                    v = tag_vector(await lf.artist_top_tags(a))
+                except UpstreamError:
+                    v = {}
+                self._tick("Reading playlist genre tags", 0.45, 0.46, len(artists))
+                return a, v
+
+        artist_tags = {a: v for a, v in await asyncio.gather(*(get(a) for a in artists)) if v}
+        whole = build_profile(artist_tags, counts)
+        per_vibe: dict[int, dict] = {}
+        if len(vibes) > 1:
+            for v in vibes:
+                vc = Counter(pl[j][0].primary_artist for j in v.members)
+                at = {a: artist_tags[a] for a in vc if a in artist_tags}
+                if len(at) >= 2:
+                    per_vibe[v.id] = build_profile(at, vc)
+        log.info("playlist tag profile: %s (tagged artists %d/%d)", top_profile_tags(whole, 8), len(artist_tags), len(artists))
+        untagged = 1 - len(artist_tags) / max(1, len(artists))
+        return {"all": ([whole] + list(per_vibe.values())) if whole else [], "vibe": per_vibe, "whole": whole,
+                "untagged_share": untagged}
+
     def _profile(self, pl, norms: list[Norm], vibes) -> PlaylistProfile:
         folded = [n.bpm_folded for n in norms]
         med = float(statistics.median(folded))
         lo, hi = float(np.percentile(folded, 10)), float(np.percentile(folded, 90))
         overall = centroid_of(norms)
+        labels = vibe_labels([v.centroid for v in vibes], [v.bpm for v in vibes], overall if len(vibes) > 1 else None)
         out = []
         for v in vibes:
             cen = v.centroid
             ordered = sorted(v.members, key=lambda j: distance(norms[j], cen))[:3]
             out.append(VibeOut(
-                id=v.id, label=vibe_label(cen, v.bpm, overall if len(vibes) > 1 else None), share=round(v.share, 3), bpm=round(v.bpm, 1),
+                id=v.id, label=labels[v.id], share=round(v.share, 3), bpm=round(v.bpm, 1),
                 track_count=len(v.members), features=FeatureSummary(**cen.summary(bpm=v.bpm)),
                 example_tracks=[TrackRef(title=pl[j][0].title, artist=pl[j][0].primary_artist) for j in ordered]))
         return PlaylistProfile(bpm_median=round(med, 1), bpm_range=(round(lo, 1), round(hi, 1)),
                                features=FeatureSummary(**overall.summary(bpm=med)), vibes=out)
 
-    async def _lastfm_candidates(self, tracks, pl, norms, vibes) -> dict[str, Cand]:
+    async def _candidates(self, tracks, pl, norms, vibes, seed_artists: list[str], profiles: dict) -> tuple[dict[str, Cand], set[str]]:
+        """Last.fm similar artists/tracks + tag top artists, merged with ListenBrainz similar artists."""
         lf = self.s.lastfm
-        counts = Counter(a for t in tracks for a in t.artists if a)
-        seed_artists = [a for a, _ in counts.most_common(15)]
         seed_tracks: list[tuple[str, str]] = []
         seen = set()
         for v in vibes:
-            q = max(1, round(20 * v.share))
+            q = max(1, round(SEED_TRACKS * v.share))
             for j in sorted(v.members, key=lambda j: distance(norms[j], v.centroid))[:q]:
                 t = pl[j][0]
                 k = (norm_name(t.primary_artist), norm_title(t.title))
                 if k not in seen:
                     seen.add(k)
                     seed_tracks.append((t.primary_artist, clean_title(t.title)))
-        seed_tracks = seed_tracks[:20]
+        seed_tracks = seed_tracks[:SEED_TRACKS]
+        title_for = {}
+        for t in tracks:
+            title_for.setdefault(t.primary_artist, clean_title(t.title))
 
         cands: dict[str, Cand] = {}
 
-        def add(name: str, aff: float, source: str, title: str | None = None):
+        def add(name: str, aff: float, source: str, title: str | None = None, origin: str = "lastfm",
+                mbid: str | None = None, seed: str | None = None):
             if not name:
                 return
             c = cands.setdefault(norm_name(name), Cand(name))
             c.hits.append((aff, source))
+            if seed:
+                c.seeds.add(norm_name(seed))
+            c.origins.add(origin)
+            if mbid and not c.mbid:
+                c.mbid = mbid
             if title:
                 c.tracks.append((aff, title))
 
         failures = 0
         sem = asyncio.Semaphore(8)
+        top_tags = top_profile_tags(profiles.get("whole") or {}, 3)
+        n_calls = len(seed_artists) + len(seed_tracks) + len(top_tags)
 
         async def guard(coro):
             nonlocal failures
@@ -395,38 +654,90 @@ class Pipeline:
                     failures += 1
                     self._last_err = str(e)
                     return None
+                finally:
+                    self._tick("Finding similar artists", 0.46, 0.48, n_calls)
 
-        sim_a = await asyncio.gather(*(guard(lf.artist_similar(a, 50)) for a in seed_artists))
-        for res in sim_a:
-            for name, m in res or []:
-                add(name, m, "similar_artist")
-        self.rep.progress(0.48, "Finding similar tracks")
-        sim_t = await asyncio.gather(*(guard(lf.track_similar(a, t, 30)) for a, t in seed_tracks))
-        for res in sim_t:
-            for artist, title, m in res or []:
-                add(artist, m, "similar_track", title)
-        self.rep.progress(0.50, "Reading tags")
-        tag_res = await asyncio.gather(*(guard(lf.artist_top_tags(a)) for a in seed_artists[:10]))
-        tagsum: Counter = Counter()
-        for res in tag_res:
-            for name, cnt in res or []:
-                n = name.strip().lower()
-                if n in JUNK_TAGS or re.fullmatch(r"\d{4}", n) or re.search(r"under \d+ listeners", n):
-                    continue
-                tagsum[n] += cnt
-        top_tags = [t for t, _ in tagsum.most_common(5)]
-        tag_pages = await asyncio.gather(*(guard(lf.tag_top_artists(t, 50, p)) for t in top_tags for p in (2, 3)))
+        lb_task = asyncio.create_task(self._listenbrainz_candidates(seed_artists, title_for))
+        sim_a, sim_t, tag_pages = await asyncio.gather(
+            asyncio.gather(*(guard(lf.artist_similar(a, 50, with_mbid=True)) for a in seed_artists)),
+            asyncio.gather(*(guard(lf.track_similar(a, t, 30, with_mbid=True)) for a, t in seed_tracks)),
+            asyncio.gather(*(guard(lf.tag_top_artists(t, 50, 2)) for t in top_tags)))
+        for seed, res in zip(seed_artists, sim_a):
+            for name, m, mb in res or []:  # Last.fm MBIDs let the ListenBrainz popularity prefilter
+                add(name, m, "similar_artist", seed=seed, mbid=mb)  # skip mainstream artists cheaply
+        for (seed, _), res in zip(seed_tracks, sim_t):
+            for artist, title, m, mb in res or []:
+                add(artist, m, "similar_track", title, seed=seed, mbid=mb)
         for res in tag_pages:
             for name in res or []:
                 add(name, 0.3, "tag")
+        lb_rows, seed_mbids = await lb_task
+        for name, aff, mbid, ref in lb_rows:
+            add(name, aff, "similar_artist", origin="listenbrainz", mbid=mbid, seed="lb:" + ref)
         if not cands:
             if failures:
                 raise PipelineError("upstream_error", "Last.fm is not responding. Please try again in a minute.",
-                                getattr(self, "_last_err", ""))
+                                    getattr(self, "_last_err", ""))
             raise PipelineError("no_candidates", "Last.fm returned no similar artists for this playlist.")
         if failures:
             self.rep.warn("Some Last.fm lookups failed, so the candidate pool may be smaller than usual.")
-        return cands
+        return cands, seed_mbids
+
+    async def _listenbrainz_candidates(self, seed_artists: list[str], title_for: dict[str, str]):
+        """[(name, affinity 0..0.9, mbid)] from ListenBrainz co-listening, plus the seed MBIDs.
+        Never raises: any failure degrades to Last.fm-only with a warning."""
+        lb = self.s.listenbrainz
+        if lb is None:
+            return [], set()
+
+        async def work():
+            sem = asyncio.Semaphore(4)
+
+            async def mbid_of(a):
+                async with sem:
+                    try:
+                        m = (await self.s.lastfm.artist_info(a))[1]
+                    except UpstreamError:
+                        m = None
+                    if not m:
+                        try:
+                            m = await lb.lookup_artist_mbid(a, title_for.get(a, ""))
+                        except UpstreamError:
+                            m = None
+                    return m
+
+            mbids = [m for m in await asyncio.gather(*(mbid_of(a) for a in seed_artists[:LB_SEEDS])) if m]
+            errors = 0
+
+            async def sim(m):
+                nonlocal errors
+                async with sem:
+                    try:
+                        return await lb.similar_artists(m)
+                    except UpstreamError as e:
+                        errors += 1
+                        log.warning("ListenBrainz similar-artists failed for %s: %s", m, e)
+                        return []
+
+            res = await asyncio.gather(*(sim(m) for m in dict.fromkeys(mbids)))
+            if mbids and errors == len(set(mbids)):
+                raise UpstreamError("all ListenBrainz similar-artist calls failed")
+            rows = []
+            for ref, r in zip(dict.fromkeys(mbids), res):
+                r = r[:LB_ROWS_PER_SEED]
+                if not r or r[0][2] <= 0:
+                    continue
+                top = r[0][2]
+                for amb, name, score in r:  # per-reference normalization; sqrt keeps the long tail usable
+                    rows.append((name, 0.9 * math.sqrt(max(0.0, score) / top), amb, ref))
+            return rows, set(mbids)
+
+        try:
+            return await asyncio.wait_for(work(), LB_TIMEOUT)
+        except Exception as e:  # noqa: BLE001 - ListenBrainz must never fail a job
+            log.warning("ListenBrainz unavailable: %s", e)
+            self.rep.warn("ListenBrainz was unavailable, so recommendations use Last.fm data only.")
+            return [], set()
 
 
 async def run_analysis(svc: Services, playlist_id: str, max_listeners: int, limit: int, rep: Reporter) -> None:

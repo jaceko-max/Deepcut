@@ -8,7 +8,7 @@ import numpy as np
 
 from app.scoring.normalize import Norm
 
-W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.25, 0.30, 0.25, 0.20
+W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.10, 0.20, 0.35, 0.35  # keep in sync with score.py
 TEMPO_NORM = 0.908
 
 
@@ -106,7 +106,8 @@ def centroid_of(norms: list[Norm]) -> Norm:
     th = np.array([tempo_angle(n.bpm_folded) for n in norms])
     mean_th = math.atan2(np.sin(th).mean(), np.cos(th).mean())
     bpm = angle_to_bpm(mean_th)
-    return Norm(bpm, bpm, np.mean([n.groove for n in norms], 0),
+    raw = float(np.median([n.bpm_raw for n in norms]))  # unfolded: lets distance() spot half/double time
+    return Norm(raw, bpm, np.mean([n.groove for n in norms], 0),
                 np.mean([n.tone for n in norms], 0), np.mean([n.timbre for n in norms], 0))
 
 

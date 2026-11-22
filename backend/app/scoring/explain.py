@@ -8,8 +8,10 @@ from app.scoring.normalize import Norm
 MAX_LEN = 90
 
 
-def vibe_label(norm: Norm, bpm: float, ref: Norm | None = None) -> str:
+def vibe_label(norm: Norm, bpm: float, ref: Norm | None = None, exclude: set[int] = frozenset(),
+               used: list[int] | None = None) -> str:
     """With `ref` (the whole playlist), traits are described relative to it so sibling vibes read differently."""
+    used = [] if used is None else used
     t, g = norm.tone, norm.groove
     if ref is None:
         base_t, base_g = [0.5] * len(t), [0.5] * len(g)
@@ -20,8 +22,20 @@ def vibe_label(norm: Norm, bpm: float, ref: Norm | None = None) -> str:
         words = [("darker", "brighter"), ("lighter low end", "heavier low end"), ("sparser drums", "busier drums"),
                  ("straighter beat", "more syncopated"), ("softer", "louder")]
     devs = [t[0] - base_t[0], t[2] - base_t[2], g[1] - base_g[1], g[3] - base_g[3], t[4] - base_t[4]]
-    cands = sorted(((abs(d), words[i][int(d >= 0)]) for i, d in enumerate(devs)), key=lambda c: -c[0])
-    return " · ".join([f"{round(bpm)} BPM"] + [c[1] for c in cands[:2]])
+    cands = sorted(((abs(d), i, words[i][int(d >= 0)]) for i, d in enumerate(devs)
+                    if i not in exclude), key=lambda c: -c[0])
+    used.extend(c[1] for c in cands[:2])
+    return " · ".join([f"{round(bpm)} BPM"] + [c[2] for c in cands[:2]])
+
+
+def vibe_labels(cens: list[Norm], bpms: list[float], ref: Norm | None) -> list[str]:
+    """Labels for sibling vibes. With 2 vibes the deviations from the overall centroid are mirror
+    images, so each later vibe skips the traits an earlier one already used and is described by its
+    own next most distinctive traits."""
+    if ref is None or len(cens) < 2:
+        return [vibe_label(c, b, ref) for c, b in zip(cens, bpms)]
+    used: list[int] = []
+    return [vibe_label(c, b, ref, exclude=set(used), used=used) for c, b in zip(cens, bpms)]
 
 
 def _tempo_clause(cand_raw: float, vibe_bpm: float) -> str:
@@ -69,3 +83,18 @@ def explain(cand: Norm, cand_bpm_raw: float, vibe: Norm, vibe_bpm: float) -> str
     while len(", ".join(clauses)) > MAX_LEN and len(clauses) > 1:
         clauses.pop()
     return ", ".join(clauses)[:MAX_LEN]
+
+
+def with_tags(why: str, tags: list[str]) -> str:
+    """Append '; shared tags: a, b' when it fits in MAX_LEN, dropping trailing audio clauses
+    (never the first) or the second tag to make room; otherwise return `why` unchanged."""
+    tags = [t for t in tags if t][:2]
+    if not tags:
+        return why
+    clauses = why.split(", ")
+    for k in range(len(clauses), 0, -1):
+        for n in range(len(tags), 0, -1):
+            s = ", ".join(clauses[:k]) + "; shared tags: " + ", ".join(tags[:n])
+            if len(s) <= MAX_LEN:
+                return s
+    return why

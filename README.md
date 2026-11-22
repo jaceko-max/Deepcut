@@ -9,10 +9,11 @@ Paste a public Spotify playlist and Deepcut works out what its tracks feel like 
 1. **Read the playlist.** Spotify's embed page gives the track list and a 30-second preview MP3 per track. Up to 40 tracks are sampled, spread across artists.
 2. **Listen.** Each preview is decoded and analysed with plain numpy and scipy (no librosa): tempo with octave-aware folding, pulse clarity, beat regularity, syncopation, onset density, spectral balance and 12 MFCC coefficients, with mean and standard deviation. A clip takes well under a second.
 3. **Find your vibes.** Tracks are clustered (k-means, 1 to 3 clusters, chosen by silhouette) so a playlist that mixes 90 BPM slow burners and 124 BPM dance tracks becomes two vibes, not one muddy average.
-4. **Gather candidates.** Last.fm's similar-artist, similar-track and tag graphs are walked from your most frequent artists and the tracks closest to each vibe.
-5. **Cut the mainstream.** Artists in your playlist are removed, and Last.fm listener counts enforce your cap (default 200K, adjustable from 10K to 1M).
-6. **Compare beat to beat.** Candidate previews (Deezer) get the same analysis. Distance is a weighted blend of tempo (octave-circular, so half-time counts as a match), groove, tone and timbre, calibrated against how tightly your own playlist clusters, then turned into a 0-100 match score.
-7. **Explain.** Every result says why it matched, for example "Same 92 BPM pocket, matching syncopation, darker low end".
+4. **Gather candidates.** Last.fm's similar-artist, similar-track and tag graphs, plus ListenBrainz co-listening "similar artists", are walked from your main (primary, non-soundtrack) artists and the tracks closest to each vibe. Artists found by both sources, or by several of your artists, rank higher.
+5. **Cut the mainstream.** Artists in your playlist and tribute/karaoke acts are removed. Last.fm listener counts enforce your cap (default 200K, adjustable from 10K to 1M); ListenBrainz user counts and Deezer fan counts act as backup caps for artists Last.fm undercounts.
+6. **Stay in genre.** Your playlist's Last.fm tags become a genre profile (umbrella tags like "pop" or "rock" count less than specific ones like "shoegaze"), per vibe and overall. Candidates whose tags don't overlap enough are dropped before any audio is fetched. Christmas songs, live recordings, karaoke/cover/tribute versions, sped-up/slowed edits, instrumental versions and film/TV soundtrack cuts are filtered out unless your playlist has them too.
+7. **Compare beat to beat.** Up to two Deezer previews per candidate artist get the same analysis, and the best-matching one wins (not just the most popular one). Audio distance is a weighted blend of timbre, tone, groove and tempo (octave-circular, with a small penalty for half/double time), calibrated against how tightly your own playlist clusters. The 0-100 match score is 65% audio match and 35% genre-tag fit, so off-genre tracks score visibly lower.
+8. **Explain.** Every result says why it matched, for example "Same 92 BPM pocket, matching syncopation; shared tags: shoegaze, dream pop".
 
 ## Architecture
 
@@ -104,7 +105,7 @@ Open <http://localhost:3000>. With `NEXT_PUBLIC_API_URL` unset, the frontend run
 | `MAX_CONCURRENT_JOBS` | `2` | |
 | `ANALYSIS_WORKERS` | `2` | audio process pool size |
 | `JOB_TTL_SECONDS` | `3600` | |
-| `HTTP_USER_AGENT` | `Deepcut/0.1` | |
+| `HTTP_USER_AGENT` | `Deepcut/0.1` | also sent to ListenBrainz (no key needed; if it is down, results fall back to Last.fm only with a warning) |
 | `LOG_LEVEL` | `info` | |
 | `GLOBAL_JOB_LIMIT` | `30` | max analyses started across all clients per 10 minutes (429 `too_many_jobs`) |
 | `PREVIEW_SECRET` | random per start | signs preview links; set a fixed value (Render generates one) so play buttons survive restarts |
@@ -132,8 +133,9 @@ The free plan sleeps when idle and has an ephemeral disk, so the first request a
 - Playlist data and 30-second previews: Spotify.
 - Candidate previews and artwork: Deezer.
 - Similarity, tags and listener counts: Last.fm.
+- Co-listening similar artists and popularity: ListenBrainz (MetaBrainz Foundation).
 
-Deepcut is an independent project and is not affiliated with or endorsed by Spotify, Deezer or Last.fm. Previews are streamed from the providers and are never stored.
+Deepcut is an independent project and is not affiliated with or endorsed by Spotify, Deezer, Last.fm or ListenBrainz. Previews are streamed from the providers and are never stored.
 
 ## License
 

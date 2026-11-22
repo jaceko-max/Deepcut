@@ -10,7 +10,13 @@ from app.audio.dsp import octave_distance
 from app.scoring.normalize import Norm
 from app.scoring.vibes import Vibe, centroid_of
 
-W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.25, 0.30, 0.25, 0.20
+# Re-weighted from per-group AUC (own-playlist vs foreign tracks, 12 playlist pairs): timbre 0.68-0.85,
+# tone 0.62-0.81, groove 0.46-0.72, tempo 0.47-0.63. The old 0.25/0.30/0.25/0.20 with a 0.15 tempo
+# scale saturated the tempo term (~0.2 added to every distance), pushing D_ref to the 0.25 clamp so
+# everything scored 80-96. New weights: mean AUC 0.694 -> ~0.81.
+W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.10, 0.20, 0.35, 0.35
+TEMPO_SCALE = 0.30
+HALF_DOUBLE_PENALTY = 0.03  # raw tempo ratio ~2: a 60 BPM ballad is not a 120 BPM banger
 
 
 def _rms(a: np.ndarray, b: np.ndarray) -> float:
@@ -18,9 +24,11 @@ def _rms(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def distance(a: Norm, b: Norm) -> float:
-    tempo = min(1.0, octave_distance(a.bpm_folded, b.bpm_folded) / 0.15)
+    tempo = min(1.0, octave_distance(a.bpm_folded, b.bpm_folded) / TEMPO_SCALE)
+    ratio = max(a.bpm_raw, b.bpm_raw) / max(1e-6, min(a.bpm_raw, b.bpm_raw))
+    octave = HALF_DOUBLE_PENALTY if ratio > 1.6 else 0.0
     return float(W_TEMPO * tempo + W_GROOVE * _rms(a.groove, b.groove)
-                 + W_TONE * _rms(a.tone, b.tone) + W_TIMBRE * _rms(a.timbre, b.timbre))
+                 + W_TONE * _rms(a.tone, b.tone) + W_TIMBRE * _rms(a.timbre, b.timbre) + octave)
 
 
 def compute_d_ref(norms: list[Norm], vibes: list[Vibe]) -> float:
@@ -62,7 +70,7 @@ class Scored:
 
     @property
     def rank_score(self) -> float:
-        return self.score * (0.9 + 0.1 * self.affinity)
+        return self.score * (0.75 + 0.25 * self.affinity)
 
 
 def select_diverse(scored: list[Scored], limit: int, shares: dict[int, float]) -> list[Scored]:

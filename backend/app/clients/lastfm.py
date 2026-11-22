@@ -48,23 +48,27 @@ class LastfmClient:
         await self.cache.put_http(key, json.dumps(data), TTL)
         return data
 
-    async def artist_similar(self, artist: str, limit: int = 50) -> list[tuple[str, float]]:
+    async def artist_similar(self, artist: str, limit: int = 50, with_mbid: bool = False) -> list[tuple]:
+        """[(name, match)] or, with_mbid, [(name, match, mbid | None)]."""
         d = await self._call("artist.getSimilar", artist=artist, limit=limit, autocorrect=1)
         out = []
         for a in _listify((d.get("similarartists") or {}).get("artist")):
             try:
-                out.append((a["name"], float(a.get("match", 0))))
-            except (KeyError, ValueError, TypeError):
+                row = (a["name"], float(a.get("match", 0)))
+                out.append(row + ((a.get("mbid") or None,) if with_mbid else ()))
+            except (KeyError, ValueError, TypeError, AttributeError):
                 pass
         return out
 
-    async def track_similar(self, artist: str, track: str, limit: int = 30) -> list[tuple[str, str, float]]:
+    async def track_similar(self, artist: str, track: str, limit: int = 30, with_mbid: bool = False) -> list[tuple]:
+        """[(artist, title, match)] or, with_mbid, [(artist, title, match, artist mbid | None)]."""
         d = await self._call("track.getSimilar", artist=artist, track=track, limit=limit, autocorrect=1)
         out = []
         for t in _listify((d.get("similartracks") or {}).get("track")):
             try:
-                out.append((t["artist"]["name"], t["name"], float(t.get("match", 0))))
-            except (KeyError, ValueError, TypeError):
+                row = (t["artist"]["name"], t["name"], float(t.get("match", 0)))
+                out.append(row + ((t["artist"].get("mbid") or None,) if with_mbid else ()))
+            except (KeyError, ValueError, TypeError, AttributeError):
                 pass
         return out
 
@@ -82,10 +86,18 @@ class LastfmClient:
         d = await self._call("tag.getTopArtists", tag=tag, limit=limit, page=page)
         return [a["name"] for a in _listify((d.get("topartists") or {}).get("artist")) if a.get("name")]
 
-    async def artist_listeners(self, artist: str) -> int | None:
-        d = await self._call("artist.getInfo", artist=artist, autocorrect=1)
-        stats = (d.get("artist") or {}).get("stats") or {}
+    async def artist_info(self, artist: str, autocorrect: int = 1) -> tuple[int | None, str | None, str | None]:
+        """(listeners, MusicBrainz artist id, resolved name) from one cached artist.getInfo call."""
+        d = await self._call("artist.getInfo", artist=artist, autocorrect=autocorrect)
+        a = d.get("artist") or {}
+        stats = a.get("stats") or {}
         try:
-            return int(stats["listeners"])
+            listeners = int(stats["listeners"])
         except (KeyError, ValueError, TypeError):
-            return None
+            listeners = None
+        mbid = a.get("mbid") if isinstance(a.get("mbid"), str) and a.get("mbid") else None
+        name = a.get("name") if isinstance(a.get("name"), str) else None
+        return listeners, mbid, name
+
+    async def artist_listeners(self, artist: str) -> int | None:
+        return (await self.artist_info(artist))[0]

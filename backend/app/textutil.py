@@ -24,6 +24,15 @@ def norm_name(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+def strict_name(s: str) -> str:
+    """Like norm_name but keeps '+', '&' and 'and' distinct from nothing: 'Florence + The Machine'
+    != 'Florence The Machine' (a bogus Last.fm autocorrect target), while case/accents still fold."""
+    s = _fold(s).lower()
+    s = re.sub(r"\s*(\+|&|\band\b)\s*", " and ", s)
+    s = re.sub(r"[^a-z0-9 ]+", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
 def norm_title(s: str) -> str:
     return norm_name(clean_title(s))
 
