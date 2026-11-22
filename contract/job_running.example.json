@@ -7,7 +7,7 @@
   "created_at": "2026-11-22T06:40:00Z",
   "updated_at": "2026-11-22T06:40:48Z",
   "params": {
-    "max_listeners": 200000,
+    "max_listeners": 500000,
     "limit": 20
   },
   "playlist": {

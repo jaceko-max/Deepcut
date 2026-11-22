@@ -26,6 +26,8 @@ class DeezerTrack:
     preview_url: str
     link: str
     duration: int | None = None
+    rank: int | None = None   # Deezer popularity (higher = more popular); present on search/top lists
+    isrc: str | None = None
 
 
 def deezer_body_rate_limited(resp: httpx.Response) -> bool:
@@ -51,6 +53,8 @@ def parse_track(d: dict, fallback_artist: str | None = None) -> DeezerTrack | No
         artwork_url=album.get("cover_medium") or album.get("cover") or None,
         preview_url=preview, link=d.get("link") or f"https://www.deezer.com/track/{d['id']}",
         duration=d.get("duration"),
+        rank=int(d["rank"]) if isinstance(d.get("rank"), (int, float)) else None,
+        isrc=d.get("isrc") if isinstance(d.get("isrc"), str) and d.get("isrc") else None,
     )
 
 

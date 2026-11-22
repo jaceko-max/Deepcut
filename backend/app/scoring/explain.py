@@ -98,3 +98,17 @@ def with_tags(why: str, tags: list[str]) -> str:
             if len(s) <= MAX_LEN:
                 return s
     return why
+
+
+def deep_cut_why(artist: str, why: str) -> str:
+    """'Deep cut from <artist> · <audio clauses>' within MAX_LEN: trailing audio clauses are dropped
+    first; a very long artist name falls back to the generic phrase."""
+    prefix = f"Deep cut from {artist} · "
+    if len(prefix) > MAX_LEN - 20:
+        prefix = "Lesser-known track by an artist you like · "
+    clauses = [c for c in why.split("; ")[0].split(", ") if c]
+    while clauses and len(prefix + ", ".join(clauses)) > MAX_LEN:
+        clauses.pop()
+    if not clauses:
+        return prefix.rstrip(" ·")[:MAX_LEN]
+    return prefix + ", ".join(clauses)

@@ -41,7 +41,7 @@ deepcut/
 Base URL `NEXT_PUBLIC_API_URL`. Errors always `{"error":{"code":string,"message":string}}`; FastAPI 422 remapped to 400 `invalid_request`.
 
 - `GET /api/health` → `{"status":"ok","version":"0.1.0"}` (frontend pings on load to wake cold server).
-- `POST /api/analyze` body `{"playlist_url": string, "max_listeners": int 10000..1000000 = 200000, "limit": int 5..50 = 20}`.
+- `POST /api/analyze` body `{"playlist_url": string, "max_listeners": int 10000..1000000 = 500000, "limit": int 5..50 = 20}`.
   `playlist_url` accepts `https://open.spotify.com[/intl-xx]/playlist/{id}?si=..`, `spotify:playlist:{id}`, bare 22-char id; regex `(?:playlist[/:])?([A-Za-z0-9]{22})`.
   → 202 `{"job_id","status":"queued","poll_url":"/api/jobs/{job_id}"}`; 400 `invalid_playlist_url`|`invalid_request`; 429 `too_many_jobs` (3 per IP per 10 min, `Retry-After`); 503 `server_busy` (>10 queued).
 - `GET /api/jobs/{job_id}` → 200 JobResponse; 404 `job_not_found` (TTL 1h).
@@ -68,7 +68,7 @@ Result {rank: int, deezer_id: int, title, artist, album: string|null, artwork_ur
   preview_url: string, preview_proxy_url: string ("/api/preview/{deezer_id}"), deezer_url: string,
   spotify_search_url: string ("https://open.spotify.com/search/" + encodeURIComponent(artist+" "+title)),
   listeners: int, match_score: int 0..100, bpm: number (1 decimal), vibe_id: int, why: string (<=90 chars),
-  source: "similar_artist"|"similar_track"|"tag", features: FeatureSummary}
+  source: "similar_artist"|"similar_track"|"tag"|"deep_cut", features: FeatureSummary}
 ```
 
 ## 3. Feature extraction (numpy/scipy only, `audio/features.py`, FEATURE_VERSION=1)
@@ -122,3 +122,7 @@ Frontend behavior: client page; job id in URL (`/?job=<id>`) so refresh resumes;
 
 Backend pytest, no network by default (`-m live` opt-in): synthetic audio (`tests/synth.py`: kick 55 Hz sine 120 ms decay per beat, hats = HP noise >7 kHz on 8ths/16ths, optional off-16th snare, −50 dB noise floor). Tests: tempo (90/120/140 within ±2% or octave-equivalent; 174 folds to 87±2), features orderings (bass vs hats, syncopated vs straight, 16th vs 8th density, click regularity > 0.8, finite & deterministic, WAV decode via miniaudio), normalize, vibes (2 blobs→k=2, 1 blob→k=1, n<8→1), score (identical→100, monotonic, D=D_ref→85, diversity), explain (≤90 chars, half-time wording), url parse, clients (respx: Deezer code 4 retry, ISRC miss→search, Spotify no-items→embed fixture, listeners string→int), **offline end-to-end pipeline** with respx fixtures + synthetic WAV previews (2 vibes; 5M-listener artist filtered; playlist artist excluded; 120 BPM candidate outranks 170 BPM noise; second run hits feature cache), contract examples validate, API (202, poll to done, 404 shape, 4th POST → 429, bad body → 400).
 Frontend: vitest (slider round-trip, format, useJob with fake timers), `tsc --noEmit`, lint, `next build`; mock mode renders.
+
+## 8. Later changes (Nov 2026)
+
+Default listener cap is 500K. New artists must have at least min(0.25·cap, max(15K, cap/10)) Last.fm listeners so results stay findable. Up to ~30% of results are `deep_cut`s: lesser-known tracks (not top-5, Deezer rank ≤ 0.6× the artist's best) by playlist artists with ≥2 tracks; the listener cap does not apply to them. Candidates are balanced across the playlist artists that led to them, and genre-tag similarity (Last.fm) gates and blends into the score. See README for the current pipeline.

@@ -12,6 +12,17 @@ describe("contract examples", () => {
     }
     expect(mockDone.playlist_profile?.vibes.length).toBeGreaterThanOrEqual(1);
   });
+  it("done example includes a deep cut with a valid source", () => {
+    const sources = new Set(["similar_artist", "similar_track", "tag", "deep_cut"]);
+    for (const r of mockDone.results) expect(sources.has(r.source)).toBe(true);
+    const deep = mockDone.results.filter((r) => r.source === "deep_cut");
+    expect(deep.length).toBeGreaterThan(0);
+    for (const r of deep) {
+      expect(r.why.startsWith(`Deep cut from ${r.artist} · `)).toBe(true);
+      expect(r.why.length).toBeLessThanOrEqual(90);
+    }
+    expect(mockDone.params.max_listeners).toBe(500_000);
+  });
   it("running example has empty results", () => {
     expect(mockRunning.status).toBe("running");
     expect(mockRunning.results).toEqual([]);

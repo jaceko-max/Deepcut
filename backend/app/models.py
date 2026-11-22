@@ -18,7 +18,7 @@ ErrorCode = Literal[
 
 class AnalyzeRequest(BaseModel):
     playlist_url: str = Field(max_length=512)
-    max_listeners: int = Field(200000, ge=10000, le=1000000)
+    max_listeners: int = Field(500000, ge=10000, le=1000000)
     limit: int = Field(20, ge=5, le=50)
 
 
@@ -93,7 +93,7 @@ class Result(BaseModel):
     bpm: float
     vibe_id: int
     why: str
-    source: Literal["similar_artist", "similar_track", "tag"]
+    source: Literal["similar_artist", "similar_track", "tag", "deep_cut"]
     features: FeatureSummary
 
 

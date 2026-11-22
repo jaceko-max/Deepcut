@@ -31,10 +31,10 @@ from app.jobs import Reporter
 from app.models import (FeatureSummary, PlaylistInfoOut, PlaylistProfile, Result, Stats, TrackRef,
                         Vibe as VibeOut)
 from app.ratelimit import TokenBucket
-from app.scoring.explain import explain, vibe_labels, with_tags
+from app.scoring.explain import deep_cut_why, explain, vibe_labels, with_tags
 from app.scoring.normalize import MfccScaler, Norm, normalize
 from app.scoring.score import (Scored, candidate_distance, compute_d_ref, distance, match_score,
-                               select_diverse)
+                               order_by_score, select_diverse)
 from app.scoring.tags import (build_profile, shared_tags, similarity, tag_vector, top_profile_tags,
                                JUNK_TAGS as _TAG_JUNK)
 from app.scoring.vibes import build_vibes, centroid_of
@@ -45,7 +45,9 @@ log = logging.getLogger("deepcut.pipeline")
 
 MAX_PLAYLIST_TRACKS = 200
 SAMPLE_SIZE = 40
-MIN_LISTENERS = 500
+MIN_LISTENERS = 15_000     # floor on Last.fm listeners for NEW artists: below this, results are hard to find
+MIN_LISTENERS_CAP_DIV = 10  # ...rising with the cap: results sit in the top decade below it (50K-500K at 500K)
+MIN_LISTENERS_MAX_SHARE = 0.25  # ...but never above a quarter of the cap (deep 10K-50K caps still work)
 LISTENER_BATCH = 40
 MAX_LISTENER_LOOKUPS = 120
 MAX_LISTENER_LOOKUPS_HARD = 160
@@ -66,6 +68,25 @@ TRACKS_PER_ARTIST = 5      # Deezer tracks fetched per candidate artist (after f
 CLIPS_PER_ARTIST = 2       # analyzed per artist when the budget allows
 MAX_CANDIDATE_CLIPS = 80
 SEED_TRACKS = 12           # track.getSimilar seeds (often empty for new releases; ListenBrainz covers)
+# "Deep cuts": lesser-known tracks by the playlist's own core artists (the listener cap does not apply:
+# the artist is known, the track is what's obscure).
+DEEP_CUT_ARTISTS = 8       # playlist artists (by track count) searched for deep cuts
+DEEP_CUT_MIN_TRACKS = 2    # an artist needs >= 2 playlist tracks to count as "an artist you like"
+DEEP_CUT_TOP_FETCH = 50    # Deezer /artist/{id}/top?limit=50, ordered by popularity with a `rank` field
+DEEP_CUT_SKIP_TOP = 5      # the artist's 5 most popular tracks (by list position and by rank) are hits
+DEEP_CUT_RANK_RATIO = 0.60 # Deezer rank is log-like (hits ~800K, obscure ~300K): <= 60% of the artist's best
+DEEP_CUT_CLIPS = 3         # analyzed per artist (<= 24 extra clips)
+DEEP_CUT_PER_ARTIST = 2    # kept per artist in the results
+DEEP_CUT_SHARE = (0.25, 0.30, 0.35)  # (min, target, max) share of results
+DEEP_CUT_MIN_SCORE = 55    # a deep cut that does not match the playlist's sound is not worth a slot
+DEEP_CUT_AFFINITY = 0.5    # neutral rank_score weight (no similarity edge involved)
+DEEP_CUT_SKIP = re.compile(r"remix|\bmix\)|interlude|\bskit\b|\bintro\b|\boutro\b|a ?cappella|acapella|"
+                           r"instrumental|\bdemo\b|\bedit\b|\bversion\b|\breprise\b", re.I)
+
+
+def min_listeners(cap: int) -> int:
+    """Listener floor for new artists: results should be not-mainstream but still findable."""
+    return int(min(MIN_LISTENERS_MAX_SHARE * cap, max(MIN_LISTENERS, cap / MIN_LISTENERS_CAP_DIV)))
 
 
 class PipelineError(Exception):
@@ -155,6 +176,66 @@ def pick_seeds(tracks: list[PlaylistTrack], pl, norms, vibes, small: int = 15, l
     return order[:large if singles >= 0.6 else small], counts
 
 
+def deep_cut_artists(counts: Counter, n: int = DEEP_CUT_ARTISTS) -> list[str]:
+    """Core playlist artists (primary, non-soundtrack/tribute: `counts` from pick_seeds) with at least
+    DEEP_CUT_MIN_TRACKS tracks, most tracks first."""
+    return [a for a in sorted(counts, key=lambda a: (-counts[a], a)) if counts[a] >= DEEP_CUT_MIN_TRACKS][:n]
+
+
+def pick_deep_cuts(artist: str, top: list[DeezerTrack], playlist_titles: set[str], playlist_isrcs: set[str],
+                   allowed: set[str] = frozenset(), n: int = DEEP_CUT_CLIPS) -> list[DeezerTrack]:
+    """Lesser-known tracks by `artist` from its Deezer top list (popularity order): not in the playlist,
+    not among its DEEP_CUT_SKIP_TOP hits (by position or by rank), rank <= DEEP_CUT_RANK_RATIO x its best,
+    clean (no live/holiday/sped-up/remix/interlude...), one version per base title."""
+    own = [t for t in top if norm_name(t.artist) == norm_name(artist)]  # drop features on others' songs
+    if not own:
+        return []
+    ranks = [t.rank for t in own if t.rank]
+    best = max(ranks) if ranks else None
+    hits = set(t.id for t in own[:DEEP_CUT_SKIP_TOP])
+    hits |= {t.id for t in sorted((t for t in own if t.rank), key=lambda t: -t.rank)[:DEEP_CUT_SKIP_TOP]}
+    # Versions of hits / playlist tracks ("Poison" on another album, "X (Remix)") are not deep cuts.
+    seen = {norm_title(t.title) for t in own if t.id in hits} | set(playlist_titles)
+    out: list[DeezerTrack] = []
+    for t in own:
+        base = norm_title(t.title)
+        if t.id in hits or base in seen or (t.isrc and t.isrc in playlist_isrcs):
+            continue
+        if best is None or not t.rank or t.rank > DEEP_CUT_RANK_RATIO * best:
+            continue
+        if DEEP_CUT_SKIP.search(t.title) or is_contaminated(t.title, t.album, t.artist, allowed):
+            continue  # a rejected live take must not block the studio version further down
+        seen.add(base)
+        out.append(t)
+        if len(out) >= n:
+            break
+    return out
+
+
+def deep_cut_slots(limit: int) -> tuple[int, int, int]:
+    """(min, target, max) number of deep cuts in a list of `limit` results."""
+    lo, mid, hi = DEEP_CUT_SHARE
+    return math.ceil(lo * limit), round(mid * limit), math.floor(hi * limit)
+
+
+def merge_deep_cuts(discovery: list[Scored], deep: list[Scored], limit: int) -> list[Scored]:
+    """Final list: discoveries (already diversity-selected, best first) plus deep cuts at about
+    DEEP_CUT_SHARE of the list, <= DEEP_CUT_PER_ARTIST per artist, one per artist first. Ordered by
+    score with at most one track per artist in the top 10. Deep cuts backfill a short discovery list."""
+    rounds: list[list[Scored]] = [[] for _ in range(DEEP_CUT_PER_ARTIST)]
+    per: dict[str, int] = {}
+    for d in sorted(deep, key=lambda x: -x.rank_score):
+        a = d.artist.lower()
+        if per.get(a, 0) < DEEP_CUT_PER_ARTIST:
+            rounds[per.get(a, 0)].append(d)
+            per[a] = per.get(a, 0) + 1
+    ordered_deep = [d for r in rounds for d in r]
+    target = min(len(ordered_deep), deep_cut_slots(limit)[1])
+    disc = discovery[:limit - target]
+    k = min(len(ordered_deep), limit - len(disc))
+    return order_by_score(disc + ordered_deep[:k])[:limit]
+
+
 def interleave_families(cands: list, weight: dict[str, int]) -> list:
     """Round-robin across seed families, keeping each family's internal order. Families of artists with
     more playlist tracks get more turns per round (sqrt of their track count)."""
@@ -209,9 +290,16 @@ class Cand:
         return max(self.hits, key=lambda h: (h[0], pri[h[1]]))[1]
 
 
+@dataclass
+class DeepCutArtist(Cand):
+    """A playlist artist whose lesser-known tracks are offered as deep cuts (scored like a candidate)."""
+    best_rank: int | None = None
+
+
 class Pipeline:
     def __init__(self, svc: Services, playlist_id: str, max_listeners: int, limit: int, rep: Reporter):
         self.s, self.pid, self.max_listeners, self.limit, self.rep = svc, playlist_id, max_listeners, limit, rep
+        self._artist_tags: dict[str, dict] = {}
         self.dl_sem = asyncio.Semaphore(8)
         self._ticks: dict[str, int] = {}
 
@@ -250,6 +338,14 @@ class Pipeline:
 
     # -- main -----------------------------------------------------------
     async def run(self) -> None:
+        self._dc_task: asyncio.Task | None = None
+        try:
+            await self._run()
+        finally:
+            if self._dc_task:
+                self._dc_task.cancel()
+
+    async def _run(self) -> None:
         rep, s = self.rep, self.s
         if not s.settings.lastfm_api_key:
             raise PipelineError("upstream_error", "The service is temporarily unavailable. Please try again later.",
@@ -312,6 +408,10 @@ class Pipeline:
         marks["playlist_audio"] = time.monotonic() - t_start
         rep.stage("finding_candidates", 0.45, "Finding similar artists")
         seeds, counts = pick_seeds(tracks, pl, norms, vibes)
+        allowed = allowed_categories([t.title for t in tracks])
+        # Deep cuts (Deezer + one cached Last.fm call per core artist) run alongside the candidate search.
+        dc_task = self._dc_task = asyncio.create_task(self._deep_cuts(deep_cut_artists(counts), tracks, allowed))
+        floor = min_listeners(self.max_listeners)
         profiles = await self._tag_profiles(counts, seeds, pl, vibes)
         cands, seed_mbids = await self._candidates(tracks, pl, norms, vibes, seeds, profiles)
         considered = len(cands)
@@ -381,7 +481,6 @@ class Pipeline:
         # (Deezer and Last.fm have separate rate limits); genre-rejected artists' lookups are cancelled.
         tsem = asyncio.Semaphore(8)
         no_preview = contaminated = 0
-        allowed = allowed_categories([t.title for t in tracks])
 
         deezer_big = 0
 
@@ -431,7 +530,7 @@ class Pipeline:
             await asyncio.gather(*(info(c) for c in batch))
             ranked += batch
             filtered_mainstream += sum(1 for c in batch if c.listeners > self.max_listeners)
-            ok = [c for c in batch if MIN_LISTENERS <= c.listeners <= self.max_listeners]
+            ok = [c for c in batch if floor <= c.listeners <= self.max_listeners]
             if lb_pop_ok and ok:  # second mainstream signal (MBIDs learned from Last.fm getInfo)
                 big = await self._lb_mainstream([c for c in ok if c.mbid])
                 if big is None:
@@ -491,12 +590,15 @@ class Pipeline:
         if not pool:
             raise PipelineError("no_candidates", "No candidate tracks with previews were found.")
 
-        # 8. analyze candidates
+        # 8. analyze candidates (+ deep cuts, analyzed and cached like any other clip)
         marks["candidates"] = time.monotonic() - t_start
+        dc_pool = [(c, t) for c, ts in await dc_task for t in ts if t.id not in seen_ids]
+        clips = pool + dc_pool
         craws = await self._gather_progress(
-            [self._features(f"dz:{t.id}:v{FEATURE_VERSION}", t.preview_url) for _, t in pool],
+            [self._features(f"dz:{t.id}:v{FEATURE_VERSION}", t.preview_url) for _, t in clips],
             "analyzing_candidates", 0.55, 0.95, "Analyzing candidate")
         good = [(c, t, r) for (c, t), r in zip(pool, craws) if r]
+        dc_good = [(c, t, r) for (c, t), r in zip(dc_pool, craws[len(pool):]) if r]
         if not good:
             raise PipelineError("no_candidates", "None of the candidate previews could be analyzed.")
 
@@ -523,9 +625,28 @@ class Pipeline:
             best.setdefault(sc.artist.lower(), sc)
         if len(best) >= self.limit:
             scored = list(best.values())
+        deep: list[Scored] = []
+        for c, t, r in dc_good:
+            c.tags = self._artist_tags.get(c.name)  # playlist tag profile lookups (seed artists come first)
+            n = normalize(r, scaler)
+            vid, dc = candidate_distance(n, norms, vibes)
+            audio = match_score(dc, d_ref)
+            tsim, fit = self._tag_fit(c, vid, profiles)
+            score = int(round(W_AUDIO * audio + W_TAGS * 100 * fit))
+            log.info("deep cut candidate: %s - %s score=%d audio=%d deezer_rank=%s artist_best_rank=%s",
+                     c.name, t.title, score, audio, t.rank, c.best_rank)
+            if score < DEEP_CUT_MIN_SCORE:
+                continue
+            deep.append(Scored(key=t.id, artist=t.artist or c.name, vibe_id=vid, score=score,
+                               affinity=DEEP_CUT_AFFINITY, family=None))
+            info_by_key[t.id] = (c, t, r, n, audio, tsim)
+        n_deep = min(sum(min(DEEP_CUT_PER_ARTIST, k) for k in Counter(d.artist.lower() for d in deep).values()),
+                     deep_cut_slots(self.limit)[1])
         total = sum(family_weight.values()) or 1
-        chosen = select_diverse(scored, self.limit, {v.id: v.share for v in vibes},
+        chosen = select_diverse(scored, self.limit - n_deep, {v.id: v.share for v in vibes},
                                 {f: n / total for f, n in family_weight.items()})
+        chosen = merge_deep_cuts(chosen, deep, self.limit)
+        deep_keys = {d.key for d in deep}
         distinct = len({s.artist.lower() for s in chosen})
         if distinct < 0.75 * self.limit:
             rep.warn(f"Only {distinct} artists under this listener cap matched your playlist. "
@@ -536,7 +657,9 @@ class Pipeline:
             v = vibes[sc.vibe_id]
             summ = n.summary()
             why = explain(n, n.bpm_raw, v.centroid, v.bpm)
-            if c.tags:
+            if sc.key in deep_keys:
+                why = deep_cut_why(c.name, why)
+            elif c.tags:
                 prof = profiles["vibe"].get(v.id) or (profiles["all"][0] if profiles["all"] else {})
                 why = with_tags(why, shared_tags(c.tags, prof) or shared_tags(c.tags, profiles["all"][0] if profiles["all"] else {}))
             results.append(Result(
@@ -544,7 +667,7 @@ class Pipeline:
                 artwork_url=t.artwork_url, preview_url=t.preview_url, preview_proxy_url=preview_path(self.s.settings.preview_secret, t.id),
                 deezer_url=t.link, spotify_search_url=spotify_search_url(t.artist or c.name, t.title),
                 listeners=c.listeners, match_score=max(0, min(100, sc.score)), bpm=summ["bpm"], vibe_id=v.id,
-                why=why, source=c.source, features=FeatureSummary(**summ)))
+                why=why, source="deep_cut" if sc.key in deep_keys else c.source, features=FeatureSummary(**summ)))
             log.info("result %d: %s - %s score=%d audio=%d tag_sim=%s", rank, t.artist, t.title, sc.score, audio,
                      None if tsim is None else round(tsim, 3))
         stats = Stats(candidates_considered=considered, candidates_analyzed=len(good),
@@ -555,6 +678,46 @@ class Pipeline:
         rep.done(results, stats)
 
     # -- helpers --------------------------------------------------------
+    async def _deep_cuts(self, artists: list[str], tracks: list[PlaylistTrack], allowed: set[str]
+                         ) -> list[tuple["DeepCutArtist", list[DeezerTrack]]]:
+        """[(artist, deep-cut tracks)] for the playlist's core artists. Never raises: deep cuts are a bonus."""
+        if not artists:
+            return []
+        s = self.s
+        titles = {norm_title(t.title) for t in tracks}
+        isrcs = {t.isrc for t in tracks if t.isrc}
+        sem = asyncio.Semaphore(4)
+
+        async def one(a: str):
+            async with sem:
+                try:
+                    aid, _ = await s.deezer.find_artist(a)
+                    if not aid:
+                        return None
+                    top = await s.deezer.artist_top(aid, DEEP_CUT_TOP_FETCH, a)
+                    picks = pick_deep_cuts(a, top, titles, isrcs, allowed)
+                    if not picks:
+                        return None
+                    try:
+                        listeners = (await s.lastfm.artist_info(a))[0] or 0
+                    except UpstreamError:
+                        listeners = 0
+                except UpstreamError as e:
+                    log.warning("deep cuts for %s failed: %s", a, e)
+                    return None
+                own = [t.rank for t in top if t.rank and norm_name(t.artist) == norm_name(a)]
+                c = DeepCutArtist(a, listeners=listeners, best_rank=max(own) if own else None)
+                return c, picks
+
+        try:
+            res = await asyncio.gather(*(one(a) for a in artists))
+        except Exception:  # noqa: BLE001 - never fail a job because of deep cuts
+            log.exception("deep cuts failed")
+            return []
+        out = [r for r in res if r]
+        log.info("deep cuts: %s", {c.name: [t.title for t in ts] for c, ts in out})
+        return out
+
     def _tick(self, label: str, lo: float, hi: float, total: int) -> None:
         """Advance progress smoothly inside [lo, hi] with an 'x/total' counter (monotonic via the store)."""
         done = self._ticks.get(label, 0) + 1
@@ -610,6 +773,7 @@ class Pipeline:
                 return a, v
 
         artist_tags = {a: v for a, v in await asyncio.gather(*(get(a) for a in artists)) if v}
+        self._artist_tags = artist_tags
         whole = build_profile(artist_tags, counts)
         per_vibe: dict[int, dict] = {}
         if len(vibes) > 1:

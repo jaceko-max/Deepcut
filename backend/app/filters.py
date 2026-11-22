@@ -27,7 +27,8 @@ TITLE_PATTERNS: dict[str, re.Pattern] = {
                           r"super slowed|\btiktok (remix|version)", _I),
     "instrumental": re.compile(r"instrumental version|[(\[]\s*instrumental\s*[)\]]|[-–—]\s*instrumental\s*$", _I),
     "soundtrack": re.compile(r"\(from [\"“']|\[from [\"“']|from the (original )?(motion picture|film|movie|series|"
-                             r"netflix|disney|musical|soundtrack)|\bsoundtrack\b|\bost\b|from disney", _I),
+                             r"netflix|disney|musical|soundtrack)|\bsoundtrack\b|\bost\b|from disney|"
+                             r"\bmusic inspired by\b|\binspired by the (motion picture|film|movie|series)\b", _I),
 }
 # Patterns applied to the album title.
 ALBUM_PATTERNS: dict[str, re.Pattern] = {
@@ -38,7 +39,7 @@ ALBUM_PATTERNS: dict[str, re.Pattern] = {
     "tribute": re.compile(r"\btribute\b|\bsalute to\b|\bplays the music of\b|\bsongs of\b.*\bperformed by\b", _I),
     "cover": re.compile(r"\bcovers\b|\bcover songs\b|\bcovers? album\b", _I),
     "altered": TITLE_PATTERNS["altered"],
-    "soundtrack": re.compile(r"soundtrack|original (motion picture|score|cast)|\bost\b|\bmusic from the\b|"
+    "soundtrack": re.compile(r"soundtrack|original (motion picture|score|cast)|\bost\b|\bmusic from the\b|\bmusic inspired by\b|"
                              r"\bdisney\b|\bfrom the (motion picture|film|series|netflix)\b|\bthe musical\b", _I),
 }
 # Artist names that indicate tribute/karaoke/cover acts or cast recordings.

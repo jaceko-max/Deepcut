@@ -53,7 +53,7 @@ def test_analyze_and_poll_to_done(client):
     assert body["status"] == "queued" and body["poll_url"] == f"/api/jobs/{body['job_id']}"
     j, seen = poll(client, body["job_id"])
     assert j["status"] == "done" and j["stage"] == "done" and j["progress"] == 1.0
-    assert j["params"] == {"max_listeners": 200000, "limit": 20}
+    assert j["params"] == {"max_listeners": 500000, "limit": 20}
     assert seen == sorted(seen)
     assert j["results"] == [] and j["error"] is None and j["warnings"] == []
 

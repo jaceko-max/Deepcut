@@ -20,3 +20,10 @@ def test_why_length_and_proxy_url_in_example():
     for r in job.results:
         assert len(r.why) <= 90
         assert r.preview_proxy_url == f"/api/preview/{r.deezer_id}"
+
+
+def test_example_has_a_deep_cut():
+    job = JobResponse.model_validate_json((CONTRACT / "job_done.example.json").read_text())
+    deep = [r for r in job.results if r.source == "deep_cut"]
+    assert deep and all(r.why.startswith(f"Deep cut from {r.artist} · ") for r in deep)
+    assert job.params.max_listeners == 500_000

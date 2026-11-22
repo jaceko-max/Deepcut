@@ -91,7 +91,8 @@ export interface Result {
   bpm: number;
   vibe_id: number;
   why: string;
-  source: "similar_artist" | "similar_track" | "tag";
+  /** "deep_cut": a lesser-known track by an artist already in the playlist (listeners = that artist's). */
+  source: "similar_artist" | "similar_track" | "tag" | "deep_cut";
   features: FeatureSummary;
 }
 

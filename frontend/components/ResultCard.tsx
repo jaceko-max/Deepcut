@@ -9,6 +9,7 @@ import { PlayButton } from "./PreviewPlayer";
 export function ResultCard({ result, vibe, showVibe }: { result: Result; vibe?: Vibe; showVibe: boolean }) {
   const [open, setOpen] = useState(false);
   const panelId = `cmp-${result.deezer_id}`;
+  const deepCut = result.source === "deep_cut";
   return (
     <li className="rounded-xl border border-line bg-surface p-4 sm:p-5">
       <div className="flex gap-3 sm:gap-4">
@@ -25,13 +26,26 @@ export function ResultCard({ result, vibe, showVibe }: { result: Result; vibe?: 
         </div>
 
         <div className="min-w-0 flex-1">
+          {deepCut && (
+            <p className="mb-1">
+              <span
+                className="inline-flex items-center rounded-full border border-accent/60 px-2 py-0.5 text-xs font-medium text-accent-text"
+                title="A lesser-known track by an artist already in your playlist"
+              >
+                Deep cut<span aria-hidden> · </span>
+                <span className="sr-only">: a lesser-known track </span>from your playlist&apos;s artist
+              </span>
+            </p>
+          )}
           <h3 className="display truncate text-lg font-semibold leading-tight">{result.title}</h3>
           <p className="truncate text-muted">
             {result.artist}
             {result.album ? ` · ${result.album}` : ""}
           </p>
           <p className="num mt-1 text-sm">
-            <span className="text-accent-text">{formatCompact(result.listeners)} listeners</span>
+            <span className="text-accent-text">
+              {formatCompact(result.listeners)} {deepCut ? "artist listeners" : "listeners"}
+            </span>
             <span className="text-muted"> · {formatBpm(result.bpm)} BPM</span>
           </p>
         </div>

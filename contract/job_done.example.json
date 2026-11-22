@@ -3,11 +3,11 @@
   "status": "done",
   "stage": "done",
   "progress": 1.0,
-  "message": "Found 3 matches",
+  "message": "Found 4 matches",
   "created_at": "2026-11-22T06:40:00Z",
   "updated_at": "2026-11-22T06:41:12Z",
   "params": {
-    "max_listeners": 200000,
+    "max_listeners": 500000,
     "limit": 20
   },
   "playlist": {
@@ -177,6 +177,35 @@
         "low_end": 0.41,
         "energy": 0.7,
         "dynamics": 0.33
+      }
+    },
+    {
+      "rank": 4,
+      "deezer_id": 4567890,
+      "title": "Quiet Hours",
+      "artist": "Example Artist",
+      "album": "Second Album (Deluxe)",
+      "artwork_url": "https://e-cdns-images.dzcdn.net/images/cover/00000000000000000000000000000004/250x250-000000-80-0-0.jpg",
+      "preview_url": "https://cdnt-preview.dzcdn.net/api/1/1/a/b/c/0/example4.mp3?hdnea=exp=1795330520~acl=x~hmac=y",
+      "preview_proxy_url": "/api/preview/4567890",
+      "deezer_url": "https://www.deezer.com/track/4567890",
+      "spotify_search_url": "https://open.spotify.com/search/Example%20Artist%20Quiet%20Hours",
+      "listeners": 2400000,
+      "match_score": 74,
+      "bpm": 91.4,
+      "vibe_id": 0,
+      "why": "Deep cut from Example Artist · Same 92 BPM pocket, same sparse drums",
+      "source": "deep_cut",
+      "features": {
+        "bpm": 91.4,
+        "pulse_clarity": 0.6,
+        "onset_density": 0.35,
+        "regularity": 0.8,
+        "syncopation": 0.33,
+        "brightness": 0.34,
+        "low_end": 0.69,
+        "energy": 0.55,
+        "dynamics": 0.46
       }
     }
   ],

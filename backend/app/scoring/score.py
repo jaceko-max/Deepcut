@@ -126,13 +126,16 @@ def select_diverse(scored: list[Scored], limit: int, shares: dict[int, float],
             if id(s) not in taken_ids and take(s):
                 taken_ids.add(id(s))
         slack += 1
-    chosen.sort(key=lambda s: (-s.score, -s.affinity))
-    # at most one track per artist within the top 10
+    return order_by_score(chosen)[:limit]
+
+
+def order_by_score(chosen: list[Scored], top: int = 10) -> list[Scored]:
+    """Sort by score, then keep at most one track per artist within the top `top` places."""
+    pool = sorted(chosen, key=lambda s: (-s.score, -s.affinity))
     ordered: list[Scored] = []
-    pool = list(chosen)
     while pool:
-        seen = {s.artist.lower() for s in ordered} if len(ordered) < 10 else set()
+        seen = {s.artist.lower() for s in ordered} if len(ordered) < top else set()
         pick = next((s for s in pool if s.artist.lower() not in seen), pool[0])
         ordered.append(pick)
         pool.remove(pick)
-    return ordered[:limit]
+    return ordered

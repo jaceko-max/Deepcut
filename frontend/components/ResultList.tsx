@@ -14,7 +14,7 @@ export function ResultList({ job }: { job: JobResponse }) {
     <section aria-labelledby="results-h" className="space-y-4">
       <div>
         <h2 id="results-h" className="display text-2xl font-semibold">
-          {job.results.length} deep cuts
+          {job.results.length} picks for you
         </h2>
         {s && (
           <p className="num text-sm text-muted">
