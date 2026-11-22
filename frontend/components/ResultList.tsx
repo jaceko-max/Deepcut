@@ -1,4 +1,5 @@
 import { formatCompact } from "@/lib/format";
+import { moreFromStart } from "@/lib/results";
 import type { JobResponse } from "@/lib/types";
 import { PreviewProvider } from "./PreviewPlayer";
 import { ResultCard } from "./ResultCard";
@@ -8,6 +9,7 @@ export function ResultList({ job }: { job: JobResponse }) {
   const vibes = job.playlist_profile?.vibes ?? [];
   const multi = vibes.length > 1;
   const s = job.stats;
+  const split = moreFromStart(job.results);
   return (
     <section aria-labelledby="results-h" className="space-y-4">
       <div>
@@ -33,10 +35,20 @@ export function ResultList({ job }: { job: JobResponse }) {
       ) : (
         <PreviewProvider>
           <ol className="space-y-3">
-            {job.results.map((r) => (
+            {job.results.slice(0, split).map((r) => (
               <ResultCard key={r.deezer_id} result={r} vibe={vibes.find((v) => v.id === r.vibe_id)} showVibe={multi} />
             ))}
           </ol>
+          {split < job.results.length && (
+            <>
+              <h3 className="display pt-4 text-lg font-semibold">More from these artists</h3>
+              <ol start={split + 1} className="space-y-3">
+                {job.results.slice(split).map((r) => (
+                  <ResultCard key={r.deezer_id} result={r} vibe={vibes.find((v) => v.id === r.vibe_id)} showVibe={multi} />
+                ))}
+              </ol>
+            </>
+          )}
         </PreviewProvider>
       )}
     </section>
