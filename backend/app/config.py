@@ -48,7 +48,7 @@ class Settings:
     job_ttl_seconds: int = 3600
     http_user_agent: str = "Deepcut/0.1"
     log_level: str = "info"
-    job_timeout_seconds: int = 300
+    job_timeout_seconds: int = 420
     max_queued_jobs: int = 10
     ip_job_limit: int = 3
     ip_job_window_seconds: int = 600
@@ -83,6 +83,7 @@ class Settings:
             max_concurrent_jobs=_int("MAX_CONCURRENT_JOBS", 2),
             analysis_workers=_int("ANALYSIS_WORKERS", 2),
             job_ttl_seconds=_int("JOB_TTL_SECONDS", 3600),
+            job_timeout_seconds=_int("JOB_TIMEOUT_SECONDS", 420),
             http_user_agent=env("HTTP_USER_AGENT", "Deepcut/0.1"),
             log_level=env("LOG_LEVEL", "info"),
             global_job_limit=_int("GLOBAL_JOB_LIMIT", 30),

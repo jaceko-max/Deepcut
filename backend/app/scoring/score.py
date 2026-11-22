@@ -16,6 +16,8 @@ from app.scoring.vibes import Vibe, centroid_of
 # everything scored 80-96. New weights: mean AUC 0.694 -> ~0.81.
 W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.10, 0.20, 0.35, 0.35
 TEMPO_SCALE = 0.30
+FAMILY_SHARE = 0.3  # at most ~30% of results may come from one playlist artist's neighbourhood
+FAMILY_MIN = 2
 HALF_DOUBLE_PENALTY = 0.03  # raw tempo ratio ~2: a 60 BPM ballad is not a 120 BPM banger
 
 
@@ -67,13 +69,15 @@ class Scored:
     vibe_id: int
     score: int
     affinity: float
+    family: str | None = None  # playlist artist that led to this candidate
 
     @property
     def rank_score(self) -> float:
         return self.score * (0.75 + 0.25 * self.affinity)
 
 
-def select_diverse(scored: list[Scored], limit: int, shares: dict[int, float]) -> list[Scored]:
+def select_diverse(scored: list[Scored], limit: int, shares: dict[int, float],
+                   family_share: dict[str, float] | None = None) -> list[Scored]:
     """<=2 per artist (<=1 in the top 10); fill across vibes in proportion to share."""
     scored = sorted(scored, key=lambda s: -s.rank_score)
     # largest-remainder quotas
@@ -82,6 +86,15 @@ def select_diverse(scored: list[Scored], limit: int, shares: dict[int, float]) -
     for v in sorted(raw, key=lambda v: raw[v] - quota[v], reverse=True)[: limit - sum(quota.values())]:
         quota[v] += 1
     per_artist: dict[str, int] = {}
+    per_family: dict[str, int] = {}
+    top_cap = max(3, math.ceil(FAMILY_SHARE * limit))
+    # A family's cap follows how much of the playlist its artist is (an artist with 2 of 100 tracks
+    # shouldn't supply a quarter of the results); unknown families get the minimum.
+    caps = {f: min(top_cap, max(FAMILY_MIN, math.ceil(3 * sh * limit))) for f, sh in (family_share or {}).items()}
+    slack = 0  # added to every cap in the backfill below until the list is full
+
+    def family_cap(f: str) -> int:
+        return (caps.get(f, FAMILY_MIN) if family_share is not None else top_cap) + slack
     chosen: list[Scored] = []
 
     def take(s: Scored) -> bool:
@@ -89,7 +102,11 @@ def select_diverse(scored: list[Scored], limit: int, shares: dict[int, float]) -
         cap = 1 if len(chosen) < 10 else 2  # <=1 per artist in the top 10, <=2 overall
         if per_artist.get(a, 0) >= cap:
             return False
+        if s.family and per_family.get(s.family, 0) >= family_cap(s.family):
+            return False
         per_artist[a] = per_artist.get(a, 0) + 1
+        if s.family:
+            per_family[s.family] = per_family.get(s.family, 0) + 1
         chosen.append(s)
         return True
 
@@ -102,11 +119,13 @@ def select_diverse(scored: list[Scored], limit: int, shares: dict[int, float]) -
             if s.vibe_id == v and id(s) not in taken_ids and take(s):
                 taken_ids.add(id(s))
                 n += 1
-    for s in scored:  # backfill if some vibe had too few candidates
-        if len(chosen) >= limit:
-            break
-        if id(s) not in taken_ids and take(s):
-            taken_ids.add(id(s))
+    while len(chosen) < limit and slack <= limit:  # backfill short vibes, loosening family caps
+        for s in scored:  # one step at a time so the remaining slots stay balanced across families
+            if len(chosen) >= limit:
+                break
+            if id(s) not in taken_ids and take(s):
+                taken_ids.add(id(s))
+        slack += 1
     chosen.sort(key=lambda s: (-s.score, -s.affinity))
     # at most one track per artist within the top 10
     ordered: list[Scored] = []

@@ -14,7 +14,8 @@ TITLE_PATTERNS: dict[str, re.Pattern] = {
     "holiday": re.compile(
         r"christmas|x-?mas\b|navidad|weihnacht|\bnoël\b|happy holidays|holiday (song|season|classic|collection|hit|magic|edition)|jingle bell|santa (claus|baby)|"
         r"sleigh|mistletoe|winter wonderland|silent night|let it snow|rudolph|deck the hall|hanukk?ah|"
-        r"little drummer boy|feliz navidad|o holy night|frosty the snowman|auld lang syne", _I),
+        r"little drummer boy|feliz navidad|o holy night|frosty the snowman|auld lang syne|"
+        r"stocking stuffer|\bstockings?\b|under the (christmas )?tree|\bsanta\b|north pole|reindeer|yuletide|\bsnowman\b", _I),
     "live": re.compile(
         r"[(\[]\s*live\b|[-–—]\s*live\b|\blive (at|from|on|in concert|session|version|acoustic)\b|"
         r"\bunplugged\b|[(\[]\s*(en vivo|en directo|ao vivo)|[-–—]\s*(en vivo|en directo|ao vivo)", _I),

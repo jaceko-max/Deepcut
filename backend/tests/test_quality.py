@@ -286,3 +286,54 @@ def test_sibling_vibe_labels_are_not_mirror_images():
     opposite.update({v: k for k, v in opposite.items()})
     assert not any(opposite.get(x) in tb for x in ta), (la, lb)
     assert len(ta) == len(tb) == 2
+
+
+def test_interleave_families_gives_every_seed_family_turns():
+    from app.pipeline import Cand, interleave_families
+
+    def cand(name, seed, aff):
+        c = Cand(name)
+        c.seed_aff[seed] = aff
+        return c
+
+    dominant = [cand(f"d{i}", "daniel caesar", 0.9 - i * 0.01) for i in range(8)]
+    other = [cand(f"t{i}", "don toliver", 0.5) for i in range(3)]
+    out = interleave_families(dominant + other, {"daniel caesar": 9, "don toliver": 4})
+    names = [c.name for c in out]
+    assert names[:5] == ["d0", "d1", "d2", "t0", "t1"]  # 3 turns (sqrt 9) then 2 turns (sqrt 4)
+    assert sorted(names) == sorted(c.name for c in dominant + other)
+
+
+def test_select_diverse_caps_one_family():
+    from app.scoring.score import Scored, select_diverse
+
+    scored = [Scored(key=i, artist=f"a{i}", vibe_id=0, score=99 - i, affinity=0.5, family="daniel caesar") for i in range(15)]
+    scored += [Scored(key=100 + i, artist=f"b{i}", vibe_id=0, score=70, affinity=0.5, family="don toliver") for i in range(10)]
+    chosen = select_diverse(scored, 20, {0: 1.0})
+    fams = [s.family for s in chosen]
+    assert len(chosen) == 20
+    assert fams.count("don toliver") == 10  # the weaker family is not crowded out
+    assert fams.count("daniel caesar") == 10  # cap of 6 is lifted only to fill the remaining slots
+
+
+def test_holiday_filter_catches_stocking_stuffer_but_not_lookalikes():
+    from app.filters import TITLE_PATTERNS
+
+    h = TITLE_PATTERNS["holiday"]
+    assert h.search("Stocking Stuffer") and h.search("Santa Tell Me") and h.search("Under the Tree")
+    assert not h.search("Stockholm Syndrome") and not h.search("Santana") and not h.search("Red Wine Holiday")
+
+
+def test_family_cap_follows_playlist_share():
+    from app.scoring.score import Scored, select_diverse
+
+    outlier = [Scored(key=i, artist=f"w{i}", vibe_id=0, score=95, affinity=0.5, family="wu tang clan") for i in range(6)]
+    core = [Scored(key=50 + i, artist=f"c{i}", vibe_id=0, score=80, affinity=0.5, family="daniel caesar") for i in range(10)]
+    other = [Scored(key=90 + i, artist=f"t{i}", vibe_id=0, score=70, affinity=0.5, family="don toliver") for i in range(10)]
+    fourth = [Scored(key=200 + i, artist=f"f{i}", vibe_id=0, score=60, affinity=0.5, family="frank ocean") for i in range(10)]
+    chosen = select_diverse(outlier + core + other + fourth, 12, {0: 1.0},
+                            {"wu tang clan": 0.02, "daniel caesar": 0.12, "don toliver": 0.08, "frank ocean": 0.2})
+    fams = [s.family for s in chosen]
+    assert fams.count("wu tang clan") == 2  # 2% of the playlist: the minimum, despite the top scores
+    assert fams.count("daniel caesar") == 4 and fams.count("don toliver") == 3 and fams.count("frank ocean") == 3
+    assert len(chosen) == 12

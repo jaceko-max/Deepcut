@@ -155,6 +155,22 @@ def pick_seeds(tracks: list[PlaylistTrack], pl, norms, vibes, small: int = 15, l
     return order[:large if singles >= 0.6 else small], counts
 
 
+def interleave_families(cands: list, weight: dict[str, int]) -> list:
+    """Round-robin across seed families, keeping each family's internal order. Families of artists with
+    more playlist tracks get more turns per round (sqrt of their track count)."""
+    groups: dict = {}
+    for c in cands:
+        groups.setdefault(c.family, []).append(c)
+    order = sorted(groups, key=lambda f: -weight.get(f, 1) if f else 0)
+    turns = {f: max(1, round(math.sqrt(weight.get(f, 1)))) if f else 1 for f in order}
+    out: list = []
+    while any(groups.values()):
+        for f in order:
+            take, groups[f] = groups[f][:turns[f]], groups[f][turns[f]:]
+            out += take
+    return out
+
+
 def spotify_search_url(artist: str, title: str) -> str:
     return "https://open.spotify.com/search/" + quote(f"{artist} {title}", safe="-_.!~*'()")
 
@@ -171,6 +187,12 @@ class Cand:
     tag_sim: float | None = None                   # best cosine vs playlist/vibe profiles (None = untagged)
     seeds: set = field(default_factory=set)        # distinct seed artists pointing at this candidate
     lb_users: int | None = None                    # ListenBrainz total_user_count, if known
+    seed_aff: dict = field(default_factory=dict)   # seed artist -> strongest affinity it gave
+
+    @property
+    def family(self) -> str | None:
+        """The playlist artist that points at this candidate most strongly."""
+        return max(self.seed_aff, key=self.seed_aff.get) if self.seed_aff else None
 
     @property
     def affinity(self) -> float:
@@ -321,7 +343,11 @@ class Pipeline:
             else:
                 group = 0 if c.lb_users * LB_USER_SCALE <= self.max_listeners else 2
             return group, -c.affinity
-        by_affinity = sorted(cands.values(), key=lookup_order)
+        family_weight = {norm_name(a): n for a, n in counts.items()}
+        # Interleave seed families so one dominant artist's neighbours can't use up the whole lookup budget;
+        # the stable sort then restores the ListenBrainz-popularity grouping.
+        by_affinity = sorted(interleave_families(sorted(cands.values(), key=lookup_order), family_weight),
+                             key=lambda c: lookup_order(c)[0])
         sem = asyncio.Semaphore(8)
         n_lookups = min(len(by_affinity), MAX_LISTENER_LOOKUPS_HARD)
 
@@ -444,6 +470,7 @@ class Pipeline:
                 t.cancel()
             raise PipelineError("no_candidates", "No underground candidates found. Try raising the listener cap.")
         keep.sort(key=lambda c: -(c.affinity * (0.5 + (c.tag_sim if c.tag_sim is not None else 0.2))))
+        keep = interleave_families(keep, family_weight)
 
         try:
             per = await asyncio.gather(*(dz_tasks[id(c)] for c in keep))
@@ -484,7 +511,8 @@ class Pipeline:
             audio = match_score(dc, d_ref)
             tsim, fit = self._tag_fit(c, vid, profiles)
             score = int(round(W_AUDIO * audio + W_TAGS * 100 * fit))
-            sc = Scored(key=t.id, artist=t.artist or c.name, vibe_id=vid, score=score, affinity=c.affinity)
+            sc = Scored(key=t.id, artist=t.artist or c.name, vibe_id=vid, score=score, affinity=c.affinity,
+                        family=c.family)
             scored.append(sc)
             info_by_key[t.id] = (c, t, r, n, audio, tsim)
         log.info("d_ref=%.3f audio scores: %s", d_ref, sorted((info_by_key[x.key][4] for x in scored), reverse=True)[:40])
@@ -495,7 +523,13 @@ class Pipeline:
             best.setdefault(sc.artist.lower(), sc)
         if len(best) >= self.limit:
             scored = list(best.values())
-        chosen = select_diverse(scored, self.limit, {v.id: v.share for v in vibes})
+        total = sum(family_weight.values()) or 1
+        chosen = select_diverse(scored, self.limit, {v.id: v.share for v in vibes},
+                                {f: n / total for f, n in family_weight.items()})
+        distinct = len({s.artist.lower() for s in chosen})
+        if distinct < 0.75 * self.limit:
+            rep.warn(f"Only {distinct} artists under this listener cap matched your playlist. "
+                     "Slide Underground depth to the right for more variety.")
         results: list[Result] = []
         for rank, sc in enumerate(chosen, 1):
             c, t, r, n, audio, tsim = info_by_key[sc.key]
@@ -633,7 +667,9 @@ class Pipeline:
             c = cands.setdefault(norm_name(name), Cand(name))
             c.hits.append((aff, source))
             if seed:
-                c.seeds.add(norm_name(seed))
+                k = norm_name(seed)
+                c.seeds.add(k)
+                c.seed_aff[k] = max(c.seed_aff.get(k, 0.0), aff)
             c.origins.add(origin)
             if mbid and not c.mbid:
                 c.mbid = mbid
