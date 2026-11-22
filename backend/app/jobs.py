@@ -62,7 +62,7 @@ class JobStore:
 
     def has_result_id(self, deezer_id: int) -> bool:
         """True if a track with this Deezer id appears in the results of a job currently held."""
-        return any(r.deezer_id == deezer_id for j in self.jobs.values() for r in (j.results or []))
+        return any(r.deezer_id == deezer_id for j in self.jobs.values() for r in [*(j.results or []), *(j.reserve or [])])
 
     def sweep(self) -> int:
         cutoff = time.monotonic() - self.settings.job_ttl_seconds
@@ -96,9 +96,9 @@ class Reporter:
         if job:
             self.store.update(self.job_id, warnings=[*job.warnings, msg])
 
-    def done(self, results: list[Result], stats: Stats) -> None:
+    def done(self, results: list[Result], stats: Stats, reserve: list[Result] | None = None) -> None:
         self.store.update(self.job_id, status="done", stage="done", progress=1.0, results=results,
-                          stats=stats, message=f"Found {len(results)} matches")
+                          reserve=reserve or [], stats=stats, message=f"Found {len(results)} matches")
 
     def fail(self, code: str, message: str) -> None:
         self.store.update(self.job_id, status="error", stage="error", message=message,

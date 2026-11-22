@@ -28,6 +28,7 @@ from app.clients.spotify import (PlaylistData, PlaylistNotFound, PlaylistTrack, 
 from app.config import Settings
 from app.filters import allowed_categories, artist_is_tribute, is_contaminated
 from app.jobs import Reporter
+from app.pasted import pasted_playlist, pick_reserve
 from app.models import (FeatureSummary, PlaylistInfoOut, PlaylistProfile, Result, Stats, TrackRef,
                         Vibe as VibeOut)
 from app.ratelimit import TokenBucket
@@ -302,6 +303,7 @@ class Pipeline:
         self._artist_tags: dict[str, dict] = {}
         self.dl_sem = asyncio.Semaphore(8)
         self._ticks: dict[str, int] = {}
+        self.pasted: list[dict] | None = None  # pasted track list instead of a Spotify playlist
 
     # -- audio features -------------------------------------------------
     async def _features(self, key: str, url: str) -> dict | None:
@@ -356,7 +358,8 @@ class Pipeline:
         marks: dict[str, float] = {}
         rep.stage("fetching_playlist", 0.01, "Reading playlist")
         try:
-            data: PlaylistData = await s.spotify.fetch_playlist(self.pid)
+            data: PlaylistData = (pasted_playlist(self.pasted) if self.pasted
+                                  else await s.spotify.fetch_playlist(self.pid))
         except PlaylistNotFound:
             raise PipelineError("playlist_not_found", "Playlist not found. Make sure it is public.")
         except PlaylistUnavailable as e:
@@ -651,8 +654,7 @@ class Pipeline:
         if distinct < 0.75 * self.limit:
             rep.warn(f"Only {distinct} artists under this listener cap matched your playlist. "
                      "Slide Underground depth to the right for more variety.")
-        results: list[Result] = []
-        for rank, sc in enumerate(chosen, 1):
+        def to_result(rank: int, sc: Scored) -> Result:
             c, t, r, n, audio, tsim = info_by_key[sc.key]
             v = vibes[sc.vibe_id]
             summ = n.summary()
@@ -662,20 +664,27 @@ class Pipeline:
             elif c.tags:
                 prof = profiles["vibe"].get(v.id) or (profiles["all"][0] if profiles["all"] else {})
                 why = with_tags(why, shared_tags(c.tags, prof) or shared_tags(c.tags, profiles["all"][0] if profiles["all"] else {}))
-            results.append(Result(
+            res = Result(
                 rank=rank, deezer_id=t.id, title=t.title, artist=t.artist or c.name, album=t.album,
                 artwork_url=t.artwork_url, preview_url=t.preview_url, preview_proxy_url=preview_path(self.s.settings.preview_secret, t.id),
                 deezer_url=t.link, spotify_search_url=spotify_search_url(t.artist or c.name, t.title),
                 listeners=c.listeners, match_score=max(0, min(100, sc.score)), bpm=summ["bpm"], vibe_id=v.id,
-                why=why, source="deep_cut" if sc.key in deep_keys else c.source, features=FeatureSummary(**summ)))
+                why=why, source="deep_cut" if sc.key in deep_keys else c.source, features=FeatureSummary(**summ))
             log.info("result %d: %s - %s score=%d audio=%d tag_sim=%s", rank, t.artist, t.title, sc.score, audio,
                      None if tsim is None else round(tsim, 3))
+            return res
+
+        results = [to_result(rank, sc) for rank, sc in enumerate(chosen, 1)]
+        # Reserve pool for client-side refine: next-best scored (already analyzed and filtered) leftovers.
+        reserve = [to_result(rank, sc) for rank, sc in enumerate(
+            pick_reserve([*scored, *deep], {x.key for x in chosen}, {x.artist.lower() for x in chosen}),
+            len(results) + 1)]
         stats = Stats(candidates_considered=considered, candidates_analyzed=len(good),
                       filtered_mainstream=filtered_mainstream, filtered_in_playlist=filtered_in_playlist,
                       no_preview=no_preview)
         log.info("timings (cumulative s): %s, total=%.1f, clips=%d",
                  {k: round(v, 1) for k, v in marks.items()}, time.monotonic() - t_start, len(pool))
-        rep.done(results, stats)
+        rep.done(results, stats, reserve)
 
     # -- helpers --------------------------------------------------------
     async def _deep_cuts(self, artists: list[str], tracks: list[PlaylistTrack], allowed: set[str]
@@ -940,5 +949,8 @@ class Pipeline:
             return [], set()
 
 
-async def run_analysis(svc: Services, playlist_id: str, max_listeners: int, limit: int, rep: Reporter) -> None:
-    await Pipeline(svc, playlist_id, max_listeners, limit, rep).run()
+async def run_analysis(svc: Services, playlist_id: str | None, max_listeners: int, limit: int, rep: Reporter,
+                       tracks: list[dict] | None = None) -> None:
+    p = Pipeline(svc, playlist_id or "", max_listeners, limit, rep)
+    p.pasted = tracks
+    await p.run()

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 Status = Literal["queued", "running", "done", "error"]
 Stage = Literal[
@@ -16,10 +16,23 @@ ErrorCode = Literal[
 ]
 
 
+class PastedTrack(BaseModel):
+    artist: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=300)
+
+
 class AnalyzeRequest(BaseModel):
-    playlist_url: str = Field(max_length=512)
+    """Exactly one of playlist_url or tracks (a pasted track list) is required."""
+    playlist_url: str | None = Field(None, max_length=512)
+    tracks: list[PastedTrack] | None = Field(None, min_length=1, max_length=200)
     max_listeners: int = Field(500000, ge=10000, le=1000000)
     limit: int = Field(20, ge=5, le=50)
+
+    @model_validator(mode="after")
+    def _exactly_one_source(self):
+        if (self.playlist_url is None) == (self.tracks is None):
+            raise ValueError("provide exactly one of playlist_url or tracks")
+        return self
 
 
 class AnalyzeResponse(BaseModel):
@@ -74,7 +87,7 @@ class PlaylistInfoOut(BaseModel):
     image_url: str | None = None
     total_tracks: int
     analyzed_tracks: int
-    source: Literal["spotify_api", "spotify_embed"]
+    source: Literal["spotify_api", "spotify_embed", "pasted"]
 
 
 class Result(BaseModel):
@@ -122,6 +135,7 @@ class JobResponse(BaseModel):
     playlist: PlaylistInfoOut | None = None
     playlist_profile: PlaylistProfile | None = None
     results: list[Result] = Field(default_factory=list)
+    reserve: list[Result] = Field(default_factory=list)  # next-best analyzed candidates, for client-side refine
     stats: Stats | None = None
     warnings: list[str] = Field(default_factory=list)
     error: JobError | None = None
