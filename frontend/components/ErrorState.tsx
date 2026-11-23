@@ -14,6 +14,7 @@ const COPY: Record<string, { title: string; body: string }> = {
   no_candidates: { title: "No underground matches", body: "Nothing under the listener cap fit this playlist. Raise the cap and try again." },
   upstream_error: { title: "A music service is struggling", body: "Spotify, Deezer or Last.fm didn't respond properly. Try again shortly." },
   internal_error: { title: "Deepcut tripped", body: "Something broke on our side. Try again; if it keeps happening, try a different playlist." },
+  share_invalid: { title: "This share link is broken", body: "The link may have been cut short when it was copied. Ask for it again, or run your own search." },
   network_error: { title: "Can't reach the server", body: "Check your connection and try again. If the server was asleep, it may need another minute." },
 };
 

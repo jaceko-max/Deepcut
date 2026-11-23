@@ -6,12 +6,37 @@ import type { Result, Vibe } from "@/lib/types";
 import { FeatureBars } from "./FeatureBars";
 import { PlayButton } from "./PreviewPlayer";
 
-export function ResultCard({ result, vibe, showVibe }: { result: Result; vibe?: Vibe; showVibe: boolean }) {
+function Thumb({ down, filled }: { down?: boolean; filled: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden className={down ? "rotate-180" : undefined}
+      fill={filled ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" strokeLinecap="round">
+      <path d="M7 10v11H3V10h4Zm0 0 4.2-7.2c.4-.6 1.1-.9 1.8-.7 1 .3 1.6 1.3 1.4 2.3L14 9h5.6c1.4 0 2.4 1.3 2.1 2.6l-1.6 7.2c-.2 1.2-1.3 2.2-2.6 2.2H7" />
+    </svg>
+  );
+}
+
+export function ResultCard({
+  result,
+  vibe,
+  showVibe,
+  feedback,
+  onVote,
+  fresh = false,
+}: {
+  result: Result;
+  vibe?: Vibe;
+  showVibe: boolean;
+  /** Current thumb for this track. Leaving `onVote` undefined hides the buttons (read-only share view). */
+  feedback?: 1 | -1;
+  onVote?: (v: 1 | -1) => void;
+  /** Pulled in from the reserve because of the user's feedback. */
+  fresh?: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const panelId = `cmp-${result.deezer_id}`;
   const deepCut = result.source === "deep_cut";
   return (
-    <li className="rounded-xl border border-line bg-surface p-4 sm:p-5">
+    <li className={`rounded-xl border bg-surface p-4 sm:p-5 ${feedback === 1 ? "border-accent" : "border-line"}`}>
       <div className="flex gap-3 sm:gap-4">
         <div className="relative shrink-0">
           {result.artwork_url ? (
@@ -26,6 +51,13 @@ export function ResultCard({ result, vibe, showVibe }: { result: Result; vibe?: 
         </div>
 
         <div className="min-w-0 flex-1">
+          {fresh && (
+            <p className="mb-1">
+              <span className="inline-flex items-center rounded-full bg-accent px-2 py-0.5 text-xs font-medium text-accent-ink">
+                New pick from your feedback
+              </span>
+            </p>
+          )}
           {deepCut && (
             <p className="mb-1">
               <span
@@ -64,6 +96,25 @@ export function ResultCard({ result, vibe, showVibe }: { result: Result; vibe?: 
 
       <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2">
         <PlayButton result={result} />
+        {onVote && (
+          <div className="flex items-center gap-1">
+            {([1, -1] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => onVote(v)}
+                aria-pressed={feedback === v}
+                aria-label={v === 1 ? `More like ${result.title}` : `Less like ${result.title}`}
+                title={v === 1 ? "More like this" : "Less like this (removes it)"}
+                className={`grid size-11 place-items-center rounded-lg border ${
+                  feedback === v ? "border-accent bg-accent text-accent-ink" : "border-line text-muted hover:border-accent hover:text-fg"
+                }`}
+              >
+                <Thumb down={v === -1} filled={feedback === v} />
+              </button>
+            ))}
+          </div>
+        )}
         <a className="inline-flex min-h-11 items-center text-sm underline decoration-line underline-offset-4 hover:decoration-accent" href={result.deezer_url} target="_blank" rel="noreferrer">
           Open on Deezer
         </a>

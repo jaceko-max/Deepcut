@@ -59,7 +59,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 /** Absolute audio URL for a result. Mock mode uses the raw preview_url. */
 export function previewSrc(r: { preview_url: string; preview_proxy_url: string }): string {
-  return isMockMode() ? r.preview_url : `${getApiUrl()}${r.preview_proxy_url}`;
+  return isMockMode() && r.preview_url ? r.preview_url : `${getApiUrl()}${r.preview_proxy_url}`;
 }
 
 // ---------------------------------------------------------------- mock engine

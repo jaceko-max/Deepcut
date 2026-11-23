@@ -195,14 +195,14 @@ def test_cors_exposes_retry_after(client):
 
 
 def test_oversized_content_length_413(client):
-    r = client.post("/api/analyze", content=b"x" * 20000, headers={"content-type": "application/json", "origin": "http://localhost:3000"})
+    r = client.post("/api/analyze", content=b"x" * 70000, headers={"content-type": "application/json", "origin": "http://localhost:3000"})
     assert r.status_code == 413 and r.json()["error"]["code"] == "invalid_request"
     assert r.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
 def test_oversized_chunked_body_413(client):
     def gen():
-        for _ in range(40):
+        for _ in range(80):
             yield b"x" * 1000
     r = client.post("/api/analyze", content=gen(), headers={"content-type": "application/json"})
     assert r.status_code == 413 and r.json()["error"]["code"] == "invalid_request"

@@ -55,7 +55,7 @@ class Settings:
     global_job_limit: int = 30  # max job creations across all clients per ip_job_window_seconds
     preview_ip_limit: int = 60  # /api/preview requests per IP per preview_window_seconds
     preview_window_seconds: int = 60
-    max_body_bytes: int = 16 * 1024
+    max_body_bytes: int = 64 * 1024  # 200 pasted tracks (up to 500 chars each) must fit
     enable_docs: bool = False
     preview_secret: str = field(default_factory=lambda: secrets.token_hex(16))  # set PREVIEW_SECRET so links survive restarts
     rate_limit_scale: float = 1.0  # multiplies upstream token-bucket capacity (tests raise it)

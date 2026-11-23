@@ -183,9 +183,11 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
 
     @app.post("/api/analyze", status_code=202, response_model=AnalyzeResponse)
     async def analyze(body: AnalyzeRequest, request: Request):
-        pid = parse_playlist_id(body.playlist_url)
-        if not pid:
-            raise ApiError(400, "invalid_playlist_url", "That doesn't look like a Spotify playlist link.")
+        pid = None
+        if body.tracks is None:
+            pid = parse_playlist_id(body.playlist_url or "")
+            if not pid:
+                raise ApiError(400, "invalid_playlist_url", "That doesn't look like a Spotify playlist link.")
         store: JobStore = request.app.state.store
         if store.queued_count() >= settings.max_queued_jobs:
             raise ApiError(503, "server_busy", "The server is busy right now. Please try again in a minute.", {"Retry-After": "30"})
@@ -204,8 +206,12 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             glimiter.release("*")
             raise ApiError(503, "server_busy", "The server is busy right now. Please try again in a minute.", {"Retry-After": "30"})
         svc = request.app.state.svc
-        request.app.state.runner.submit(
-            job.job_id, lambda rep: run_analysis(svc, pid, body.max_listeners, body.limit, rep))
+        if body.tracks is not None:
+            pasted = [t.model_dump() for t in body.tracks]
+            work = lambda rep: run_analysis(svc, None, body.max_listeners, body.limit, rep, tracks=pasted)  # noqa: E731
+        else:
+            work = lambda rep: run_analysis(svc, pid, body.max_listeners, body.limit, rep)  # noqa: E731
+        request.app.state.runner.submit(job.job_id, work)
         return AnalyzeResponse(job_id=job.job_id, poll_url=f"/api/jobs/{job.job_id}")
 
     @app.get("/api/jobs/{job_id}", response_model=JobResponse)

@@ -11,13 +11,16 @@ import { ResultList } from "@/components/ResultList";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Warnings } from "@/components/Warnings";
 import { ApiError, createJob, isMockMode, ping } from "@/lib/api";
-import type { AnalyzeRequest } from "@/lib/types";
+import { decodeShare, shareTokenFromHash } from "@/lib/share";
+import type { AnalyzeRequest, JobResponse } from "@/lib/types";
 import { useJob } from "@/lib/useJob";
 
 function setJobParam(id: string | null) {
   const url = new URL(window.location.href);
   if (id) url.searchParams.set("job", id);
   else url.searchParams.delete("job");
+  url.searchParams.delete("vibe"); // the vibe filter belongs to one job
+  url.hash = "";
   window.history.pushState(null, "", url);
 }
 
@@ -27,15 +30,32 @@ export default function Home() {
   const [waking, setWaking] = useState(false);
   const [submitError, setSubmitError] = useState<ApiError | null>(null);
   const lastReq = useRef<AnalyzeRequest | null>(null);
-  const { job, phase, retrying } = useJob(jobId);
+  const [shared, setShared] = useState<JobResponse | null>(null);
+  const [shareFailed, setShareFailed] = useState(false);
+  // a share fragment wins over ?job=: it must render without (and never poll) the server
+  const activeId = shared || shareFailed ? null : jobId;
+  const { job, phase, retrying } = useJob(activeId);
 
   // Read ?job= on mount and on back/forward; wake the server with a health ping.
   useEffect(() => {
-    const read = () => setJobId(new URLSearchParams(window.location.search).get("job"));
+    const read = () => {
+      setJobId(new URLSearchParams(window.location.search).get("job"));
+      const token = shareTokenFromHash(window.location.hash);
+      setShareFailed(false);
+      if (!token) return setShared(null);
+      decodeShare(token).then(setShared, () => {
+        setShared(null);
+        setShareFailed(true);
+      });
+    };
     read();
     void ping();
     window.addEventListener("popstate", read);
-    return () => window.removeEventListener("popstate", read);
+    window.addEventListener("hashchange", read);
+    return () => {
+      window.removeEventListener("popstate", read);
+      window.removeEventListener("hashchange", read);
+    };
   }, []);
 
   const start = useCallback(async (req: AnalyzeRequest) => {
@@ -59,11 +79,13 @@ export default function Home() {
   const reset = useCallback(() => {
     setJobParam(null);
     setJobId(null);
+    setShared(null);
+    setShareFailed(false);
     setSubmitError(null);
   }, []);
 
-  const showForm = !jobId && !submitting;
-  const running = (jobId && (phase === "polling" || phase === "idle")) || submitting;
+  const showForm = !jobId && !submitting && !shared && !shareFailed;
+  const running = (activeId && (phase === "polling" || phase === "idle")) || submitting;
 
   return (
     <>
@@ -86,7 +108,7 @@ export default function Home() {
                 Dig past the algorithm.
               </h1>
               <p className="max-w-xl text-lg text-muted">
-                Paste a Spotify playlist. Deepcut listens to its beat flow (tempo, groove, low end) and finds tracks that
+                Paste a Spotify playlist or a list of tracks. Deepcut listens to its beat flow (tempo, groove, low end) and finds tracks that
                 move the same way from artists almost nobody has heard.
               </p>
             </section>
@@ -102,13 +124,29 @@ export default function Home() {
           </>
         )}
 
+        {shared && (
+          <>
+            <section className="space-y-1">
+              <h1 className="display text-3xl font-semibold">{shared.playlist?.name ?? "Shared picks"}</h1>
+              <p className="text-sm text-muted">
+                A saved copy of someone&apos;s Deepcut results. It opens without the server, and the play buttons still work.
+              </p>
+            </section>
+            <ResultList job={shared} readOnly />
+            <button type="button" onClick={reset} className="display min-h-12 rounded-lg border border-line px-6 font-semibold hover:border-accent">
+              Dig your own playlist
+            </button>
+          </>
+        )}
+        {shareFailed && <ErrorState code="share_invalid" onRetry={reset} retryLabel="Start a new search" />}
+
         {running && <JobProgress job={job} waking={waking} retrying={retrying} />}
 
-        {jobId && job && phase !== "expired" && job.playlist_profile && phase !== "done" && (
+        {activeId && job && phase !== "expired" && job.playlist_profile && phase !== "done" && (
           <PlaylistProfile playlist={job.playlist} profile={job.playlist_profile} />
         )}
 
-        {jobId && phase === "done" && job && (
+        {activeId && phase === "done" && job && (
           <>
             {job.playlist_profile && <PlaylistProfile playlist={job.playlist} profile={job.playlist_profile} />}
             <ResultList job={job} />
