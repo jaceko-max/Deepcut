@@ -19,6 +19,14 @@ We keep the style activations rather than the 1280-d penultimate embedding: on t
 both separate a playlist's own tracks from other playlists' equally well (AUC 0.95) and tie on ranking
 held-out playlist artists (style: R@20 0.24, audio AUC 0.56; embedding: 0.21, 0.59, same clips), and the
 style profile is a third of the cache size. 6 patches scored as well as 14 at less than half the cost.
+
+Mood heads: the same EffNet pass also returns the 1280-d embedding of every patch, which feeds Essentia's
+published classification/regression heads for Discogs-EffNet (https://essentia.upf.edu/models/
+classification-heads/, same MTG license; each a ~0.5 MB dense network, 1280 -> 100 -> 1-2 outputs, plus
+the 56-tag MTG-Jamendo mood/theme head). As in Essentia, heads run on each patch embedding and their
+outputs are averaged over patches. All 12 heads add ~4 MB RSS and ~2 ms per clip. Essentia publishes no
+arousal/valence regressor for Discogs-EffNet (DEAM/emoMusic/MuSe heads exist only for VGGish and
+MusiCNN embeddings), so arousal/valence are derived from the mood heads in app/scoring/mood.py.
 """
 from __future__ import annotations
 
@@ -29,6 +37,7 @@ import os
 import sys
 import tempfile
 import urllib.request
+from dataclasses import dataclass
 from functools import lru_cache
 
 import numpy as np
@@ -48,6 +57,59 @@ MODEL_SHA256 = "a280825b334797cf677939db8cd5762c0392aedd0ca6415dbc1cd083f045e43c
 MODEL_URL = "https://essentia.upf.edu/models/feature-extractors/discogs-effnet/" + MODEL_FILE
 DEFAULT_MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                                   ".cache", "models", MODEL_FILE)  # backend/.cache is git-ignored
+
+HEADS_URL = "https://essentia.upf.edu/models/classification-heads/"
+
+
+@dataclass(frozen=True)
+class Head:
+    """One Essentia head on Discogs-EffNet embeddings (input "embeddings" (n, 1280), output "activations")."""
+    name: str      # key in the cached "mood" dict
+    path: str      # <dir>/<file> under HEADS_URL
+    sha256: str
+    index: int     # output column kept (the positive class for 2-class softmax heads)
+
+    @property
+    def file(self) -> str:
+        return self.path.rsplit("/", 1)[1]
+
+
+# Output index = position of the named class in the head's JSON metadata ("classes").
+HEADS = (
+    Head("relaxed", "mood_relaxed/mood_relaxed-discogs-effnet-1.onnx",
+         "8ba6515a1e5943a72b3b475e3a25fc7a2ff04142c3eaa6aa0716fca371efdfff", 1),  # [non_relaxed, relaxed]
+    Head("sad", "mood_sad/mood_sad-discogs-effnet-1.onnx",
+         "1a50d11c23181bdfdeabc7d6032a2dad829dfc19c3776d2ee57ef1724cb08805", 1),  # [non_sad, sad]
+    Head("happy", "mood_happy/mood_happy-discogs-effnet-1.onnx",
+         "0ca322819ef137b4b87e9866bffe7370a630e6f1165184ec106326cef6f81e06", 0),  # [happy, non_happy]
+    Head("aggressive", "mood_aggressive/mood_aggressive-discogs-effnet-1.onnx",
+         "de36550b5d1660791ad732ed6de6ebfdc3e65dcf50b928b2578ddf103dbfb400", 0),  # [aggressive, not_aggressive]
+    Head("party", "mood_party/mood_party-discogs-effnet-1.onnx",
+         "c50ac2106ec2f209dd04ad48756582df0e3f3512235310d1a4a3fcc453745f04", 1),  # [non_party, party]
+    Head("acoustic", "mood_acoustic/mood_acoustic-discogs-effnet-1.onnx",
+         "56b02abf772b9c1cf528e4d6521d6e09515cedccce47895ee5de8de33fbdf848", 0),  # [acoustic, non_acoustic]
+    Head("electronic", "mood_electronic/mood_electronic-discogs-effnet-1.onnx",
+         "4cc09140d5b078cf39e55975a23cba813e6bd4014092b78e8c415fa32a382149", 0),  # [electronic, non_electronic]
+    Head("danceable", "danceability/danceability-discogs-effnet-1.onnx",
+         "9ce9b8c44f1dd5df5ffc124e5d41d67acf254232c1b90c7e057e079ab7cead73", 0),  # [danceable, not_danceable]
+    Head("voice", "voice_instrumental/voice_instrumental-discogs-effnet-1.onnx",
+         "20155e4c439714b0c45c08644b73c8e12d9dccb173bd4ab9934bf1e5aee837ca", 1),  # [instrumental, voice]
+    Head("bright", "timbre/timbre-discogs-effnet-1.onnx",
+         "3fbeacb0006b6ca3445b8696dcd5d89917a608ab29074f935dfa68816b23b44e", 0),  # [bright, dark]
+    Head("approachable", "approachability/approachability_regression-discogs-effnet-1.onnx",
+         "f783b17ee994394f30f27d05ccd3fb845e589d107802e55e0b9cf1ea041ec894", 0),  # regression
+    Head("engaging", "engagement/engagement_regression-discogs-effnet-1.onnx",
+         "9551a6c162c9803aef5ce4e4d29a2e4fae99b5bfdc95dae9dd8fe5335e0fb567", 0),  # regression
+)
+THEME_HEAD = Head("theme", "mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.onnx",
+                  "7d6270acaa5f4bba4b115a0d6849aca05ed6bd153dcb6d9da4f6ab9f99ef10ff", -1)  # 56 sigmoids
+THEMES = ("action", "adventure", "advertising", "background", "ballad", "calm", "children", "christmas",
+          "commercial", "cool", "corporate", "dark", "deep", "documentary", "drama", "dramatic", "dream",
+          "emotional", "energetic", "epic", "fast", "film", "fun", "funny", "game", "groovy", "happy", "heavy",
+          "holiday", "hopeful", "inspiring", "love", "meditative", "melancholic", "melodic", "motivational",
+          "movie", "nature", "party", "positive", "powerful", "relaxing", "retro", "romantic", "sad", "sexy",
+          "slow", "soft", "soundscape", "space", "sport", "summer", "trailer", "travel", "upbeat", "uplifting")
+ALL_HEADS = HEADS + (THEME_HEAD,)
 
 
 def _hz2mel(hz: float) -> float:  # Slaney (Auditory Toolbox), as essentiamath.h hz2melSlaney
@@ -120,6 +182,20 @@ def model_path() -> str:
     return os.environ.get("EMBEDDING_MODEL_PATH") or DEFAULT_MODEL_PATH
 
 
+def heads_dir() -> str:
+    """Mood heads live next to the EffNet model unless MOOD_MODELS_DIR says otherwise."""
+    return os.environ.get("MOOD_MODELS_DIR") or os.path.dirname(model_path())
+
+
+def head_path(h: Head) -> str:
+    return os.path.join(heads_dir(), h.file)
+
+
+def moods_enabled() -> bool:
+    """Mood heads need the EffNet model plus every head file (a partial set would change the vector)."""
+    return enabled() and all(os.path.exists(head_path(h)) for h in ALL_HEADS)
+
+
 def enabled() -> bool:
     """EMBEDDINGS=onnx (default) uses the model when onnxruntime and the model file are present;
     EMBEDDINGS=off disables it (scores then use the hand-built DSP features only)."""
@@ -133,45 +209,85 @@ def enabled() -> bool:
 
 
 _session = None
+_head_sessions: dict[str, object] = {}
+
+
+def _session_for(path: str):
+    """One onnxruntime session per model per (worker) process, single-threaded: the process pool is the
+    parallelism."""
+    import onnxruntime as ort
+
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = 1
+    opts.inter_op_num_threads = 1
+    opts.enable_cpu_mem_arena = False  # keeps RSS low on a 512 MB instance
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    return ort.InferenceSession(path, sess_options=opts, providers=["CPUExecutionProvider"])
 
 
 def _get_session():
-    """One onnxruntime session per (worker) process, single-threaded: the process pool is the parallelism."""
     global _session
     if _session is None:
-        import onnxruntime as ort
-
-        opts = ort.SessionOptions()
-        opts.intra_op_num_threads = 1
-        opts.inter_op_num_threads = 1
-        opts.enable_cpu_mem_arena = False  # keeps RSS low on a 512 MB instance
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        _session = ort.InferenceSession(model_path(), sess_options=opts, providers=["CPUExecutionProvider"])
+        _session = _session_for(model_path())
     return _session
+
+
+def _get_head(h: Head):
+    if h.name not in _head_sessions:
+        _head_sessions[h.name] = _session_for(head_path(h))
+    return _head_sessions[h.name]
+
+
+def run_heads(emb: np.ndarray) -> tuple[dict[str, float], list[float]]:
+    """Per-patch embeddings (n, 1280) -> ({head name: mean output}, 56 mean mood/theme activations).
+    Heads score each patch and the outputs are averaged, as Essentia's predictors do."""
+    emb = np.asarray(emb, dtype=np.float32)
+    if emb.ndim != 2 or emb.shape[1] != 1280 or len(emb) == 0:
+        raise ValueError(f"expected (n, 1280) embeddings, got {emb.shape}")
+    mood = {}
+    for h in HEADS:
+        out = np.asarray(_get_head(h).run(["activations"], {"embeddings": emb})[0], dtype=np.float64)
+        mood[h.name] = round(float(out[:, h.index].mean()), 5)
+    theme = np.asarray(_get_head(THEME_HEAD).run(["activations"], {"embeddings": emb})[0], dtype=np.float64)
+    return mood, [round(float(v), 5) for v in theme.mean(axis=0)]
+
+
+def analyze_samples(y16k: np.ndarray, with_moods: bool | None = None) -> dict:
+    """One EffNet pass -> {"style": 400 mean style activations, and with the heads available
+    "mood": {name: value} and "theme": 56 mood/theme activations}."""
+    x = patches(melspectrogram(y16k))
+    if len(x) == 0:
+        raise ValueError("clip too short for the style model")
+    want = moods_enabled() if with_moods is None else with_moods
+    names = ["activations", "embeddings"] if want else ["activations"]
+    res = _get_session().run(names, {"melspectrogram": x})
+    out = {"style": [round(float(a), 5) for a in np.asarray(res[0], dtype=np.float64).mean(axis=0)]}
+    if want:
+        out["mood"], out["theme"] = run_heads(res[1])
+    return out
 
 
 def style_from_samples(y16k: np.ndarray) -> list[float]:
     """Mean Discogs style activations (400 sigmoid outputs) over up to MAX_PATCHES patches."""
-    x = patches(melspectrogram(y16k))
-    if len(x) == 0:
-        raise ValueError("clip too short for the style model")
-    act = _get_session().run(["activations"], {"melspectrogram": x})[0]
-    return [round(float(a), 5) for a in np.asarray(act, dtype=np.float64).mean(axis=0)]
+    return analyze_samples(y16k, with_moods=False)["style"]
 
 
-def download(dest: str | None = None) -> str:
-    """Fetch the pinned model and verify its sha256 (used by the Dockerfile at build time)."""
-    dest = dest or model_path()
+def _fetch(url: str, sha256: str, dest: str) -> str:
+    """Download `url` to `dest` (atomically) and verify its sha256; an existing verified file is kept."""
     os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+    if os.path.exists(dest):
+        with open(dest, "rb") as f:
+            if hashlib.sha256(f.read()).hexdigest() == sha256:
+                return dest
     h = hashlib.sha256()
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(dest) or ".")
     try:
-        with os.fdopen(fd, "wb") as f, urllib.request.urlopen(MODEL_URL, timeout=120) as r:
+        with os.fdopen(fd, "wb") as f, urllib.request.urlopen(url, timeout=120) as r:
             while chunk := r.read(1 << 20):
                 h.update(chunk)
                 f.write(chunk)
-        if h.hexdigest() != MODEL_SHA256:
-            raise RuntimeError(f"model checksum mismatch: {h.hexdigest()} != {MODEL_SHA256}")
+        if h.hexdigest() != sha256:
+            raise RuntimeError(f"checksum mismatch for {url}: {h.hexdigest()} != {sha256}")
         os.replace(tmp, dest)
     finally:
         if os.path.exists(tmp):
@@ -179,9 +295,20 @@ def download(dest: str | None = None) -> str:
     return dest
 
 
-if __name__ == "__main__":  # python -m app.audio.embed download [dest]
+def download(dest: str | None = None) -> list[str]:
+    """Fetch the pinned EffNet model to `dest` and the pinned mood heads next to it, verifying every
+    sha256 (used by the Dockerfile at build time and for local setup)."""
+    dest = dest or model_path()
+    out = [_fetch(MODEL_URL, MODEL_SHA256, dest)]
+    hdir = os.environ.get("MOOD_MODELS_DIR") or os.path.dirname(dest)
+    for h in ALL_HEADS:
+        out.append(_fetch(HEADS_URL + h.path, h.sha256, os.path.join(hdir, h.file)))
+    return out
+
+
+if __name__ == "__main__":  # python -m app.audio.embed download [dest]   (also runs as a plain script)
     if len(sys.argv) >= 2 and sys.argv[1] == "download":
-        print(download(sys.argv[2] if len(sys.argv) > 2 else None))
+        print("\n".join(download(sys.argv[2] if len(sys.argv) > 2 else None)))
     else:
         print("usage: python -m app.audio.embed download [dest]")
         sys.exit(2)

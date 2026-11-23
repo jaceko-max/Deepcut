@@ -79,7 +79,8 @@ def sc(artist, score, key=None, aff=0.8, vibe=0):
 def test_deep_cut_share_and_per_artist_caps():
     for limit in (10, 20, 30):
         lo, target, hi = deep_cut_slots(limit)
-        assert 0.25 * limit <= lo <= target <= hi <= 0.35 * limit
+        assert 0.25 * limit <= lo <= target <= hi <= 0.40 * limit
+        assert target == round(limit / 3)  # popularity mix: about a third deep cuts
     discovery = [sc(f"New {i}", 90 - i) for i in range(20)]
     deep = [sc(f"Core {a}", 99 - j, key=f"dc{a}{j}", aff=0.5) for a in range(2) for j in range(3)]
     out = merge_deep_cuts(discovery[:20 - 4], deep, 20)
@@ -96,7 +97,7 @@ def test_deep_cut_target_one_per_artist_first():
     deep = [sc(f"Core {a}", 95 - j, key=f"dc{a}{j}", aff=0.5) for a in range(8) for j in range(2)]
     out = merge_deep_cuts(discovery, deep, 20)
     dc = [s for s in out if str(s.key).startswith("dc")]
-    assert len(dc) == 6 and len({s.artist for s in dc}) == 6, "6 of 20 (30%), spread over 6 artists"
+    assert len(dc) == 7 and len({s.artist for s in dc}) == 7, "7 of 20 (a third), spread over 7 artists"
     assert [s.score for s in out] == sorted((s.score for s in out), reverse=True)
 
 
@@ -124,10 +125,9 @@ def test_deep_cut_why_prefix_and_length():
 
 
 def test_min_listener_floor():
-    assert min_listeners(500_000) == 50_000
-    assert min_listeners(1_000_000) == 100_000
-    assert min_listeners(200_000) == 20_000
-    assert min_listeners(100_000) == 15_000
+    assert min_listeners(500_000) == 15_000  # the underground tier (15K-100K) exists at the default cap
+    assert min_listeners(1_000_000) == 15_000
+    assert min_listeners(200_000) == 15_000
     assert min_listeners(40_000) == 10_000   # never above a quarter of the cap
     assert min_listeners(10_000) == 2_500
     for cap in range(10_000, 1_000_001, 10_000):

@@ -26,7 +26,7 @@ deepcut/
       main.py config.py models.py jobs.py pipeline.py cache.py ratelimit.py
       clients/ http.py spotify.py lastfm.py deezer.py
       audio/ decode.py dsp.py features.py worker.py
-      scoring/ normalize.py vibes.py score.py explain.py
+      scoring/ normalize.py vibes.py score.py explain.py mood.py tags.py
     scripts/ smoke_live.py
     tests/ conftest.py synth.py fixtures/ test_*.py
   frontend/
@@ -126,3 +126,5 @@ Frontend: vitest (slider round-trip, format, useJob with fake timers), `tsc --no
 ## 8. Later changes (Nov 2026)
 
 Default listener cap is 500K. New artists must have at least min(0.25·cap, max(15K, cap/10)) Last.fm listeners so results stay findable. Up to ~30% of results are `deep_cut`s: lesser-known tracks (not top-5, Deezer rank ≤ 0.6× the artist's best) by playlist artists with ≥2 tracks; the listener cap does not apply to them. Candidates are balanced across the playlist artists that led to them, and genre-tag similarity (Last.fm) gates and blends into the score. See README for the current pipeline.
+
+Mood rework (Nov 2026): the EffNet pass also returns per-patch 1280-d embeddings that feed 12 Essentia mood heads + the 56-tag MTG-Jamendo mood/theme head (`FEATURE_VERSION=3` caches `mood` and `theme`). Audio distance = 0.53 mood (head z-scores + derived arousal/valence, `app/scoring/mood.py`) + 0.29 style + 0.18 DSP; match score = 0.80 audio + 0.20 tag fit. Vibes keep DSP clustering but are labelled with mood words. Candidates outside the playlist's mood envelope or below the quality floor are dropped (short lists allowed, with a warning); near-duplicate picks are skipped. Popularity mix: ~⅓ deep cuts, ⅓ rising (100K..cap), ⅓ underground (15K..100K) with backfill; the listener floor is 15K; a ListenBrainz second hop finds underground candidates. `Result.tier` is an optional contract field.

@@ -43,4 +43,21 @@ describe("ResultCard", () => {
     expect(screen.queryByTitle("A lesser-known track by an artist already in your playlist")).toBeNull();
     expect(screen.queryByText(/artist listeners/)).toBeNull();
   });
+
+  it("shows a subtle popularity-tier badge, and none for older payloads without a tier", () => {
+    const under = mockDone.results.find((r) => r.tier === "underground")!;
+    const { rerender } = render(
+      <PreviewProvider>
+        <ResultCard result={under} showVibe={false} />
+      </PreviewProvider>,
+    );
+    expect(screen.getByTitle(/Underground artist/).textContent).toBe("Underground");
+    rerender(
+      <PreviewProvider>
+        <ResultCard result={{ ...under, tier: undefined }} showVibe={false} />
+      </PreviewProvider>,
+    );
+    expect(screen.queryByTitle(/Underground artist/)).toBeNull();
+    expect(screen.queryByTitle(/Rising artist/)).toBeNull();
+  });
 });

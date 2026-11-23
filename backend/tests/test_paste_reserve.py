@@ -82,10 +82,11 @@ def test_pick_reserve_one_per_artist_and_excludes_chosen():
 
 
 async def test_reserve_pool_continues_ranks_and_excludes_results(settings, wavs):
-    job = await run_once(settings, wavs, Counter(), limit=2)
+    job = await run_once(settings, wavs, Counter(), limit=1)
     assert job.status == "done", job.error
-    assert len(job.results) == 2 and len(job.reserve) == 1
-    assert [r.rank for r in job.reserve] == [3]
+    # 2 candidates pass the quality floor (Noise Merchant does not, so it is not in the reserve either)
+    assert len(job.results) == 1 and len(job.reserve) == 1
+    assert [r.rank for r in job.reserve] == [2]
     assert not {r.deezer_id for r in job.reserve} & {r.deezer_id for r in job.results}
     for r in job.reserve:  # same shape and filters as the list
         assert r.deezer_id % 10 == 0 and r.listeners <= 200_000 and len(r.why) <= 90

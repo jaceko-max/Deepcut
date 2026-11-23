@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { formatBpm, formatCompact, parsePlaylistId } from "./format";
+import { formatBpm, formatCompact, parsePlaylistId, tierBadge } from "./format";
+
+describe("tierBadge", () => {
+  it("labels rising and underground picks, nothing otherwise", () => {
+    expect(tierBadge("rising")?.label).toBe("Rising");
+    expect(tierBadge("underground")?.label).toBe("Underground");
+    expect(tierBadge("deep_cut")).toBeNull(); // deep cuts keep their own badge
+    expect(tierBadge(undefined)).toBeNull(); // older payloads have no tier
+    expect(tierBadge(null)).toBeNull();
+  });
+});
 
 describe("formatCompact", () => {
   it("formats", () => {

@@ -94,6 +94,9 @@ export interface Result {
   /** "deep_cut": a lesser-known track by an artist already in the playlist (listeners = that artist's). */
   source: "similar_artist" | "similar_track" | "tag" | "deep_cut";
   features: FeatureSummary;
+  /** Popularity tier (optional; absent in older payloads): "rising" = 100K+ Last.fm listeners up to the
+   *  cap, "underground" = below 100K, "deep_cut" = lesser-known track by a playlist artist. */
+  tier?: "deep_cut" | "rising" | "underground" | null;
 }
 
 export interface JobStats {

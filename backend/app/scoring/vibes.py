@@ -1,4 +1,4 @@
-"""Playlist vibe clustering (numpy k-means on a group-weighted embedding)."""
+"""Playlist vibe clustering (numpy k-means on a group-weighted DSP embedding)."""
 from __future__ import annotations
 
 import math
@@ -8,7 +8,7 @@ import numpy as np
 
 from app.scoring.normalize import Norm
 
-W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.10, 0.20, 0.35, 0.35  # relative DSP weights, as in score.py (clustering is DSP-only)
+W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.10, 0.20, 0.35, 0.35  # relative DSP weights, as in score.py
 TEMPO_NORM = 0.908
 
 
@@ -21,6 +21,10 @@ def angle_to_bpm(theta: float) -> float:
 
 
 def embed(norms: list[Norm]) -> np.ndarray:
+    """Clustering space: the DSP groups incl. tempo. Vibes are still *labelled* by mood (app/scoring/mood.py).
+    Clustering on mood (+style) instead was tested and lost on the benchmark (same candidates re-scored):
+    held-out-artist audio AUC 0.607 (mood) / 0.639 (mood+style+DSP) / 0.671 (style) vs 0.668 (DSP), R@20
+    0.231 vs 0.256: splitting a playlist by mood leaves each vibe's centroid too narrow to rank neighbours."""
     rows = []
     for n in norms:
         th = tempo_angle(n.bpm_folded)
@@ -107,10 +111,12 @@ def centroid_of(norms: list[Norm]) -> Norm:
     mean_th = math.atan2(np.sin(th).mean(), np.cos(th).mean())
     bpm = angle_to_bpm(mean_th)
     raw = float(np.median([n.bpm_raw for n in norms]))  # unfolded: lets distance() spot half/double time
-    styles = [n.style for n in norms if n.style is not None]
+    def mean(attr):
+        vs = [getattr(n, attr) for n in norms if getattr(n, attr) is not None]
+        return np.mean(vs, 0) if vs else None
     return Norm(raw, bpm, np.mean([n.groove for n in norms], 0),
                 np.mean([n.tone for n in norms], 0), np.mean([n.timbre for n in norms], 0),
-                np.mean(styles, 0) if styles else None)
+                mean("style"), mean("mood"), mean("mz"), mean("tz"))
 
 
 def build_vibes(norms: list[Norm]) -> list[Vibe]:

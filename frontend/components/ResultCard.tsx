@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { formatBpm, formatCompact } from "@/lib/format";
+import { formatBpm, formatCompact, tierBadge } from "@/lib/format";
 import type { Result, Vibe } from "@/lib/types";
 import { FeatureBars } from "./FeatureBars";
 import { PlayButton } from "./PreviewPlayer";
@@ -35,6 +35,7 @@ export function ResultCard({
   const [open, setOpen] = useState(false);
   const panelId = `cmp-${result.deezer_id}`;
   const deepCut = result.source === "deep_cut";
+  const tier = deepCut ? null : tierBadge(result.tier);
   return (
     <li className={`rounded-xl border bg-surface p-4 sm:p-5 ${feedback === 1 ? "border-accent" : "border-line"}`}>
       <div className="flex gap-3 sm:gap-4">
@@ -79,6 +80,11 @@ export function ResultCard({
               {formatCompact(result.listeners)} {deepCut ? "artist listeners" : "listeners"}
             </span>
             <span className="text-muted"> · {formatBpm(result.bpm)} BPM</span>
+            {tier && (
+              <span className="ml-2 inline-flex items-center rounded-full border border-line px-1.5 py-px align-middle text-[11px] font-medium text-muted" title={tier.title}>
+                {tier.label}
+              </span>
+            )}
           </p>
         </div>
 

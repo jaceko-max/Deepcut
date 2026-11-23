@@ -20,6 +20,13 @@ export function formatBpm(bpm: number): string {
   return trim(bpm.toFixed(1));
 }
 
+/** Badge for the popularity tier of a new-artist pick; deep cuts have their own badge, older payloads none. */
+export function tierBadge(tier: string | null | undefined): { label: string; title: string } | null {
+  if (tier === "rising") return { label: "Rising", title: "Rising artist: 100K+ Last.fm listeners, under your cap" };
+  if (tier === "underground") return { label: "Underground", title: "Underground artist: under 100K Last.fm listeners" };
+  return null;
+}
+
 export function formatPercent(share: number): string {
   return `${Math.round(share * 100)}%`;
 }

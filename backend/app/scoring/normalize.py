@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from app.scoring.mood import mood_vector, mood_z, theme_z
+
 # (lo, hi) linear bounds, clipped 0..1
 BOUNDS = {
     "pulse_clarity": (0.1, 0.8),
@@ -38,6 +40,9 @@ class Norm:
     tone: np.ndarray    # centroid, rolloff, bass, sub, rms, dynamics, flatness
     timbre: np.ndarray  # 24 robust-scaled MFCC stats
     style: np.ndarray | None = None  # L2-normalised sqrt of Discogs-EffNet style activations (None: no model)
+    mood: np.ndarray | None = None   # mood vector (app/scoring/mood.py; None: no mood heads)
+    mz: np.ndarray | None = None     # mood-head z-scores (for mood words)
+    tz: np.ndarray | None = None     # MTG-Jamendo mood/theme z-scores (for mood words only)
 
     def summary(self, bpm: float | None = None) -> dict:
         g, t = self.groove, self.tone
@@ -75,7 +80,9 @@ def normalize(raw: dict, scaler: MfccScaler) -> Norm:
     tone = np.array([_n(raw, "centroid_log2"), _n(raw, "rolloff_log2"), _n(raw, "bass_ratio"),
                      _n(raw, "sub_ratio"), _n(raw, "rms_mean_db"), _n(raw, "dynamic_range_db"),
                      _n(raw, "flatness")])
-    return Norm(raw["bpm_raw"], raw["bpm_folded"], groove, tone, scaler.transform(raw["mfcc"]), style_vector(raw.get("style")))
+    return Norm(raw["bpm_raw"], raw["bpm_folded"], groove, tone, scaler.transform(raw["mfcc"]),
+                style_vector(raw.get("style")), mood_vector(raw.get("mood")), mood_z(raw.get("mood")),
+                theme_z(raw.get("theme")))
 
 
 def style_vector(act) -> np.ndarray | None:

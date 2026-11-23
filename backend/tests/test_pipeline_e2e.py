@@ -153,7 +153,7 @@ def world(wavs, counters, lb_rows=None, lb_status=200, lb_pop=None, bogus=None, 
 
 
 async def run_once(settings, wavs, counters, limit=10, **world_kw):
-    """Cap 200K -> new-artist listener floor min(50K, max(15K, 20K)) = 20K."""
+    """Cap 200K -> new-artist listener floor min(50K, 15K) = 15K."""
     svc = build_services(settings)
     store = JobStore(settings)
     job = store.create(200_000, limit)
@@ -183,11 +183,13 @@ async def test_full_pipeline_offline(settings, wavs):
     assert job.stats.filtered_mainstream == 1
     assert job.stats.filtered_in_playlist == 1
     assert job.stats.candidates_analyzed == 3
-    assert set(by_artist) == {"Cand Ninety", "Cand Onetwenty", "Noise Merchant"}
-    assert by_artist["Cand Onetwenty"].match_score > by_artist["Noise Merchant"].match_score
-    assert by_artist["Cand Ninety"].match_score > by_artist["Noise Merchant"].match_score
-    assert [r.rank for r in job.results] == [1, 2, 3]
-    assert by_artist["Noise Merchant"].rank == 3
+    # Noise Merchant was analysed but scores below the quality floor: dropped instead of padding the list.
+    assert set(by_artist) == {"Cand Ninety", "Cand Onetwenty"}
+    assert [r.rank for r in job.results] == [1, 2]
+    assert any(w.startswith("Only 2 strong matches") for w in job.warnings), job.warnings
+    assert all(r.tier in ("rising", "underground") for r in job.results)
+    # 30K / 45K listeners at a 200K cap (rising starts at min(100K, cap / 3) = 66.7K)
+    assert by_artist["Cand Ninety"].tier == by_artist["Cand Onetwenty"].tier == "underground"
     for r in job.results:
         assert r.preview_proxy_url.startswith(f"/api/preview/{r.deezer_id}?sig=")
         assert r.spotify_search_url.startswith("https://open.spotify.com/search/") and " " not in r.spotify_search_url
@@ -230,7 +232,7 @@ async def test_listenbrainz_outage_degrades_to_lastfm_only(settings, wavs):
     c = Counter()
     job = await run_once(settings, wavs, c, lb_status=503)
     assert job.status == "done", job.error
-    assert {r.artist for r in job.results} == {"Cand Ninety", "Cand Onetwenty", "Noise Merchant"}
+    assert {r.artist for r in job.results} == {"Cand Ninety", "Cand Onetwenty"}
     assert any("ListenBrainz" in w for w in job.warnings)
 
 
@@ -295,14 +297,15 @@ async def test_bogus_autocorrect_and_deezer_fans_are_extra_mainstream_signals(se
 
 
 async def test_listener_floor_drops_too_niche_artists(settings, wavs):
-    CANDS["Tiny Act"] = (19_000, "cand90", 109)  # under the 20K floor at a 200K cap
+    CANDS["Tiny Act"] = (12_000, "cand90", 109)  # under the 15K floor at a 200K cap
+    CANDS["Floor Act"] = (15_000, "cand90", 110)
     try:
         job = await run_once(settings, wavs, Counter())
     finally:
-        del CANDS["Tiny Act"]
+        del CANDS["Tiny Act"], CANDS["Floor Act"]
     assert job.status == "done", job.error
     assert "Tiny Act" not in {r.artist for r in job.results}
-    assert "Noise Merchant" in {r.artist for r in job.results}  # exactly at the floor (20K) is kept
+    assert "Floor Act" in {r.artist for r in job.results}  # exactly at the floor (15K) is kept
 
 
 CORE = "Core Artist"

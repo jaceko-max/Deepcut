@@ -85,6 +85,22 @@ def explain(cand: Norm, cand_bpm_raw: float, vibe: Norm, vibe_bpm: float) -> str
     return ", ".join(clauses)[:MAX_LEN]
 
 
+def with_mood(why: str, cand_words: list[str], vibe_words: list[str]) -> str:
+    """Lead with the mood: 'Same late-night/sensual mood, <audio clauses>' when the candidate shares mood
+    words with its vibe, else '<word> mood'. Trailing audio clauses are dropped to fit MAX_LEN."""
+    shared = [w for w in cand_words if w in vibe_words][:2]
+    if shared:
+        lead = f"Same {'/'.join(shared)} mood"
+    elif cand_words:
+        lead = f"{cand_words[0][0].upper()}{cand_words[0][1:]} mood"
+    else:
+        return why
+    clauses = [lead] + [c[0].lower() + c[1:] for c in why.split(", ") if c]
+    while len(", ".join(clauses)) > MAX_LEN and len(clauses) > 1:
+        clauses.pop()
+    return ", ".join(clauses)[:MAX_LEN]
+
+
 def with_tags(why: str, tags: list[str]) -> str:
     """Append '; shared tags: a, b' when it fits in MAX_LEN, dropping trailing audio clauses
     (never the first) or the second tag to make room; otherwise return `why` unchanged."""

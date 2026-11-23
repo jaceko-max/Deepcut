@@ -108,6 +108,9 @@ class Result(BaseModel):
     why: str
     source: Literal["similar_artist", "similar_track", "tag", "deep_cut"]
     features: FeatureSummary
+    # Popularity tier (optional, added later; older clients ignore it): "deep_cut" = lesser-known track by a
+    # playlist artist, "rising" = 100K..cap Last.fm listeners, "underground" = floor..100K.
+    tier: Literal["deep_cut", "rising", "underground"] | None = None
 
 
 class Stats(BaseModel):

@@ -16,7 +16,7 @@ import httpx
 import numpy as np
 
 from app.audio.decode import AudioError
-from app.audio.embed import enabled as embed_enabled
+from app.audio.embed import enabled as embed_enabled, moods_enabled
 from app.audio.features import FEATURE_VERSION
 from app.audio.worker import AnalysisPool, analyze_async
 from app.cache import Cache
@@ -33,10 +33,11 @@ from app.pasted import pasted_playlist, pick_reserve
 from app.models import (FeatureSummary, PlaylistInfoOut, PlaylistProfile, Result, Stats, TrackRef,
                         Vibe as VibeOut)
 from app.ratelimit import TokenBucket
-from app.scoring.explain import deep_cut_why, explain, vibe_labels, with_tags
+from app.scoring.explain import deep_cut_why, explain, vibe_labels, with_mood, with_tags
+from app.scoring.mood import mood_words, word_scores
 from app.scoring.normalize import MfccScaler, Norm, normalize
-from app.scoring.score import (Scored, candidate_distance, compute_d_ref, distance, match_score,
-                               order_by_score, select_diverse)
+from app.scoring.score import (Scored, candidate_distance, compute_d_ref, distance, envelope_ratio, match_score,
+                               mood_envelope, near_dup_threshold, order_by_score, own_scores, select_diverse)
 from app.scoring.tags import (build_profile, shared_tags, similarity, tag_vector, top_profile_tags,
                                JUNK_TAGS as _TAG_JUNK)
 from app.scoring.vibes import build_vibes, centroid_of
@@ -48,8 +49,11 @@ log = logging.getLogger("deepcut.pipeline")
 MAX_PLAYLIST_TRACKS = 200
 SAMPLE_SIZE = 40
 MIN_LISTENERS = 15_000     # floor on Last.fm listeners for NEW artists: below this, results are hard to find
-MIN_LISTENERS_CAP_DIV = 10  # ...rising with the cap: results sit in the top decade below it (50K-500K at 500K)
 MIN_LISTENERS_MAX_SHARE = 0.25  # ...but never above a quarter of the cap (deep 10K-50K caps still work)
+# Popularity mix: about a third each of deep cuts, "rising" artists (RISING_MIN..cap listeners) and
+# "underground" artists (floor..RISING_MIN). Quotas fill by score and backfill from other tiers.
+RISING_MIN = 100_000
+RISING_MIN_CAP_SHARE = 1 / 3  # low caps: the rising band is the top two thirds below the cap
 LISTENER_BATCH = 40
 MAX_LISTENER_LOOKUPS = 120
 MAX_LISTENER_LOOKUPS_HARD = 160
@@ -60,15 +64,30 @@ LB_ROWS_PER_SEED = 100
 LB_TIMEOUT = 30.0          # whole ListenBrainz stage; on timeout we continue Last.fm-only
 LB_USER_SCALE = 10         # Last.fm listeners ~= 10-15x ListenBrainz users (Radiohead, Beach House, ...)
 LB_MAINSTREAM_SLACK = 2.0  # LB is a secondary signal: only reject gross mismatches
+UNDERGROUND_HOP_SOURCES = 8    # kept artists whose ListenBrainz neighbours are searched for underground artists
+UNDERGROUND_HOP_LOOKUPS = 16   # Last.fm listener + tag lookups spent on them (~6 s at Last.fm's 5 req/s)
+UNDERGROUND_HOP_TIMEOUT = 20.0
 TAG_MIN_SIM = 0.12         # hard reject below this cosine to the playlist/vibe tag profile
 TAG_FULL_SIM = 0.60        # cosine treated as a perfect genre fit in the blended score
 UNTAGGED_MIN_AFFINITY = 0.6  # artists with no usable tags survive only with strong similarity evidence
 UNTAGGED_TAG_SCORE = 0.25
-W_AUDIO, W_TAGS = 0.65, 0.35  # displayed match_score = 0.65*audio + 0.35*100*tag_fit
+# Displayed match_score = 0.80*audio + 0.20*100*tag_fit, where audio = 0.53 mood + 0.29 style + 0.18 DSP
+# (app/scoring/score.py): ~42% mood, 23% style, 14% rhythm/tone, 20% Last.fm genre tags. Benchmark: tags at
+# 0.35 / 0.20 / 0.15 gave held-out-artist AUC 0.735 / 0.722 / 0.717 and the same R@20 (0.26): genre is kept
+# as a light outlier check, mood leads. Without mood heads the old 0.65/0.35 blend applies.
+W_AUDIO, W_TAGS = 0.80, 0.20
+W_AUDIO_NO_MOOD, W_TAGS_NO_MOOD = 0.65, 0.35
+# Quality floor: candidates below it are dropped instead of padding the list (a short list gets a note).
+# The floor follows the playlist's own coherence: at most QUALITY_FLOOR, or what the playlist's own tracks
+# score against the rest of it (QUALITY_OWN_PCT percentile of leave-one-out audio, with a neutral tag fit).
+QUALITY_FLOOR = 70
+QUALITY_OWN_PCT = 25
+QUALITY_MIN = 55
+OWN_TAG_FIT = 0.75
 DEEZER_FAN_SLACK = 2.0     # reject when Deezer nb_fan > 2x the listener cap
 TRACKS_PER_ARTIST = 5      # Deezer tracks fetched per candidate artist (after filters)
 CLIPS_PER_ARTIST = 2       # analyzed per artist when the budget allows
-MAX_CANDIDATE_CLIPS = 80
+MAX_CANDIDATE_CLIPS = 72  # was 80; the lower 15K floor keeps more artists, this holds cold-search time
 SEED_TRACKS = 12           # track.getSimilar seeds (often empty for new releases; ListenBrainz covers)
 # "Deep cuts": lesser-known tracks by the playlist's own core artists (the listener cap does not apply:
 # the artist is known, the track is what's obscure).
@@ -82,16 +101,50 @@ DEEP_CUT_LFM_TOP = 200     # artist.getTopTracks limit
 DEEP_CUT_LFM_MIN_TRACKS = 10  # fewer Last.fm tracks than this: fall back to the Deezer rank ratio
 DEEP_CUT_CLIPS = 3         # analyzed per artist (<= 24 extra clips)
 DEEP_CUT_PER_ARTIST = 2    # kept per artist in the results
-DEEP_CUT_SHARE = (0.25, 0.30, 0.35)  # (min, target, max) share of results
-DEEP_CUT_MIN_SCORE = 55    # a deep cut that does not match the playlist's sound is not worth a slot
+DEEP_CUT_SHARE = (0.25, 1 / 3, 0.40)  # (min, target, max) share of results
+DEEP_CUT_MIN_SCORE = 55    # a deep cut below this (or below the quality floor) is not worth a slot
 DEEP_CUT_AFFINITY = 0.5    # neutral rank_score weight (no similarity edge involved)
 DEEP_CUT_SKIP = re.compile(r"remix|\bmix\)|interlude|\bskit\b|\bintro\b|\boutro\b|a ?cappella|acapella|"
                            r"instrumental|\bdemo\b|\bedit\b|\bversion\b|\breprise\b", re.I)
 
 
 def min_listeners(cap: int) -> int:
-    """Listener floor for new artists: results should be not-mainstream but still findable."""
-    return int(min(MIN_LISTENERS_MAX_SHARE * cap, max(MIN_LISTENERS, cap / MIN_LISTENERS_CAP_DIV)))
+    """Listener floor for new artists: results should be not-mainstream but still findable (15K at the
+    default 500K cap, so the underground tier 15K-100K exists)."""
+    return int(min(MIN_LISTENERS_MAX_SHARE * cap, MIN_LISTENERS))
+
+
+def rising_min(cap: int) -> int:
+    """Listener count separating "underground" from "rising" artists under this cap."""
+    return int(max(min_listeners(cap), min(RISING_MIN, RISING_MIN_CAP_SHARE * cap)))
+
+
+def popularity_tier(listeners: int, cap: int) -> str:
+    return "rising" if listeners >= rising_min(cap) else "underground"
+
+
+def tier_quotas(n_discovery: int) -> dict[str, int]:
+    """Discovery slots split evenly between rising and underground (rising gets the odd one)."""
+    return {"rising": n_discovery - n_discovery // 2, "underground": n_discovery // 2}
+
+
+def interleave_tiers(cands: list, cap: int) -> list:
+    """Alternate rising and underground candidates (each keeping its order) so both tiers get analysis budget."""
+    groups = {"rising": [], "underground": []}
+    for c in cands:
+        groups[popularity_tier(c.listeners, cap)].append(c)
+    out, a, b = [], groups["rising"], groups["underground"]
+    for i in range(max(len(a), len(b))):
+        out += a[i:i + 1] + b[i:i + 1]
+    return out
+
+
+def quality_floor(own: list[int], w_audio: float, w_tags: float) -> int:
+    """Minimum displayed score for a result (see QUALITY_FLOOR)."""
+    if not own:
+        return QUALITY_FLOOR
+    own_level = w_audio * float(np.percentile(own, QUALITY_OWN_PCT)) + w_tags * 100 * OWN_TAG_FIT
+    return int(round(max(QUALITY_MIN, min(QUALITY_FLOOR, own_level))))
 
 
 class PipelineError(Exception):
@@ -360,11 +413,14 @@ class Pipeline:
         # In-process instrumentation for benchmarks (scratch scripts set a dict); never part of API output.
         self.trace: dict | None = None
         self._want_style = embed_enabled()  # cached clips without the style profile are re-analysed
+        self._want_mood = moods_enabled()
+        self._vibe_words: dict[int, list[str]] = {}   # ...and, with the mood heads installed, without mood outputs
 
     # -- audio features -------------------------------------------------
     async def _features(self, key: str, url: str) -> dict | None:
         hit = await self.s.cache.get_features(key)
-        if hit and hit.get("version") == FEATURE_VERSION and (hit.get("style") or not self._want_style):
+        if (hit and hit.get("version") == FEATURE_VERSION and (hit.get("style") or not self._want_style)
+                and (hit.get("mood") or not self._want_mood)):
             return hit
         try:
             async with self.dl_sem:
@@ -473,6 +529,16 @@ class Pipeline:
         vibes = build_vibes(norms)
         d_ref = compute_d_ref(norms, vibes)
         rep.set_profile(self._profile(pl, norms, vibes))
+        # Mood-first scoring needs mood vectors on the playlist; otherwise the pre-mood blend applies.
+        has_mood = all(n.mood is not None for n in norms)
+        w_audio, w_tags = (W_AUDIO, W_TAGS) if has_mood else (W_AUDIO_NO_MOOD, W_TAGS_NO_MOOD)
+        radii = mood_envelope(norms, vibes)
+        floor_score = quality_floor(own_scores(norms, vibes, d_ref), w_audio, w_tags)
+        dup_d = near_dup_threshold(norms, [norm_name(t.primary_artist) for t, _ in pl])
+        log.info("mood=%s envelope=%s quality floor=%d near-dup distance=%.3f", has_mood,
+                 radii and {k: round(v, 3) for k, v in radii.items()}, floor_score, dup_d)
+        if self.trace is not None:
+            self.trace["floor"], self.trace["envelope"], self.trace["dup_d"] = floor_score, radii, dup_d
 
         # 4/5. seeds + Last.fm + ListenBrainz, genre-tag profile
         marks["playlist_audio"] = time.monotonic() - t_start
@@ -482,6 +548,7 @@ class Pipeline:
         # Deep cuts (Deezer + one cached Last.fm call per core artist) run alongside the candidate search.
         dc_task = self._dc_task = asyncio.create_task(self._deep_cuts(deep_cut_artists(counts), tracks, allowed))
         floor = min_listeners(self.max_listeners)
+        cap = self.max_listeners
         profiles = await self._tag_profiles(counts, seeds, pl, vibes)
         cands, seed_mbids = await self._candidates(tracks, pl, norms, vibes, seeds, profiles)
         considered = len(cands)
@@ -521,6 +588,15 @@ class Pipeline:
         # the stable sort then restores the ListenBrainz-popularity grouping.
         by_affinity = sorted(interleave_families(sorted(cands.values(), key=lookup_order), family_weight),
                              key=lambda c: lookup_order(c)[0])
+        # Popularity mix: among artists ListenBrainz already puts under the cap, alternate predicted-rising and
+        # predicted-underground ones, or the lookup budget goes to the best-connected (most popular) artists
+        # and the underground tier stays empty (user benchmark playlist: 1 of 120 lookups was 15K-100K).
+        g0 = [c for c in by_affinity if lookup_order(c)[0] == 0]
+        split = {"rising": [], "underground": []}
+        for c in g0:
+            split[popularity_tier(c.lb_users * LB_USER_SCALE, self.max_listeners)].append(c)
+        a, b = split["rising"], split["underground"]
+        by_affinity = [c for i in range(max(len(a), len(b))) for c in a[i:i + 1] + b[i:i + 1]] + by_affinity[len(g0):]
         sem = asyncio.Semaphore(8)
         n_lookups = min(len(by_affinity), MAX_LISTENER_LOOKUPS_HARD)
 
@@ -598,10 +674,11 @@ class Pipeline:
         wanted_artists = max(30, 2 * self.limit)
         ranked: list[Cand] = []
         keep: list[Cand] = []
-        for start in range(0, n_lookups, LISTENER_BATCH):
-            batch = by_affinity[start:start + LISTENER_BATCH]
+        async def process(batch: list[Cand]) -> None:
+            """Listener counts -> caps -> (Deezer lookups started) -> genre tags -> keep."""
+            nonlocal filtered_mainstream, filtered_genre, lb_pop_ok
             await asyncio.gather(*(info(c) for c in batch))
-            ranked += batch
+            ranked.extend(batch)
             filtered_mainstream += sum(1 for c in batch if c.listeners > self.max_listeners)
             ok = [c for c in batch if floor <= c.listeners <= self.max_listeners]
             if lb_pop_ok and ok:  # second mainstream signal (MBIDs learned from Last.fm getInfo)
@@ -628,12 +705,44 @@ class Pipeline:
                     dz_tasks.pop(id(c)).cancel()
                     continue
                 keep.append(c)
-            if len(keep) >= wanted_artists:
-                break
-            # Normal budget is MAX_LISTENER_LOOKUPS; keep going (up to the hard cap) only while we
-            # still could not fill the requested number of results.
-            if len(ranked) >= MAX_LISTENER_LOOKUPS and len(keep) >= self.limit + 5:
-                break
+
+        def n_under() -> int:
+            return sum(1 for c in keep if popularity_tier(c.listeners, cap) == "underground")
+
+        # Popular seeds' neighbours are mostly popular too. When the first batch shows the underground tier
+        # will be thin, a second hop runs alongside the remaining Last.fm lookups: ListenBrainz neighbours of
+        # the artists kept so far (separate rate limit), pre-filtered to the underground band with one batched
+        # ListenBrainz popularity call. Their Last.fm checks come out of the normal lookup budget, so the hop
+        # costs no extra Last.fm time.
+        hop_task: asyncio.Task | None = None
+        budget = MAX_LISTENER_LOOKUPS
+        start = 0
+        try:
+            while start < n_lookups:
+                size = min(LISTENER_BATCH, max(1, budget - len(ranked))) if len(ranked) < budget else LISTENER_BATCH
+                await process(by_affinity[start:start + size])
+                start += size
+                if (hop_task is None and s.listenbrainz is not None
+                        and n_under() < (wanted_artists // 3) * len(ranked) / max(budget, 1)):
+                    hop_task = asyncio.create_task(
+                        self._underground_hop(list(keep), cands, playlist_artists, seed_mbids, cap))
+                    budget = MAX_LISTENER_LOOKUPS - UNDERGROUND_HOP_LOOKUPS
+                # Popularity mix: keep looking (within the normal budget) until the underground tier is stocked too.
+                if len(keep) >= wanted_artists and (n_under() >= wanted_artists // 3 or len(ranked) >= budget):
+                    break
+                # Normal budget is MAX_LISTENER_LOOKUPS; keep going (up to the hard cap) only while we
+                # still could not fill the requested number of results.
+                # (A running hop is expected to keep about half of its pre-filtered picks.)
+                hop_keep = UNDERGROUND_HOP_LOOKUPS // 2 if hop_task is not None else 0
+                if len(ranked) >= budget and len(keep) + hop_keep >= self.limit + 5:
+                    break
+            if hop_task is not None:
+                extra = await hop_task
+                if extra:
+                    await process(extra)
+        finally:
+            if hop_task is not None and not hop_task.done():
+                hop_task.cancel()
         self.rep.progress(0.53, "Checked listener counts and genre tags")
         if self.trace is not None:
             self.trace["looked_up"] = {norm_name(c.name): c.listeners for c in ranked}
@@ -645,7 +754,7 @@ class Pipeline:
                 t.cancel()
             raise PipelineError("no_candidates", "No underground candidates found. Try raising the listener cap.")
         keep.sort(key=lambda c: -(c.affinity * (0.5 + (c.tag_sim if c.tag_sim is not None else 0.2))))
-        keep = interleave_families(keep, family_weight)
+        keep = interleave_tiers(interleave_families(keep, family_weight), cap)
 
         try:
             per = await asyncio.gather(*(dz_tasks[id(c)] for c in keep))
@@ -683,18 +792,30 @@ class Pipeline:
         rep.stage("ranking", 0.95, "Ranking matches")
         scored: list[Scored] = []
         info_by_key: dict[int, tuple] = {}
+        off_mood = below_floor = 0
         for c, t, r in good:
             n = normalize(r, scaler)
             vid, dc = candidate_distance(n, norms, vibes)
             audio = match_score(dc, d_ref)
             tsim, fit = self._tag_fit(c, vid, profiles)
-            score = int(round(W_AUDIO * audio + W_TAGS * 100 * fit))
+            score = int(round(w_audio * audio + w_tags * 100 * fit))
+            env = envelope_ratio(n, vibes, radii)
+            tier = popularity_tier(c.listeners, cap)
+            reject = "mood" if env is not None and env > 1.0 else "floor" if score < floor_score else None
+            self._trace_scored(c, t, r, audio, tsim, fit, score, vid, deep=False, n=n, env=env, tier=tier,
+                               reject=reject)
+            if reject == "mood":  # outside the playlist's mood envelope: an outlier, whatever its genre
+                off_mood += 1
+                continue
+            if reject == "floor":
+                below_floor += 1
+                continue
             sc = Scored(key=t.id, artist=t.artist or c.name, vibe_id=vid, score=score, affinity=c.affinity,
-                        family=c.family)
+                        family=c.family, tier=tier)
             scored.append(sc)
             info_by_key[t.id] = (c, t, r, n, audio, tsim)
-            self._trace_scored(c, t, r, audio, tsim, fit, score, vid, deep=False)
-        log.info("d_ref=%.3f audio scores: %s", d_ref, sorted((info_by_key[x.key][4] for x in scored), reverse=True)[:40])
+        log.info("d_ref=%.3f audio scores: %s; rejected off-mood=%d below-floor=%d", d_ref,
+                 sorted((info_by_key[x.key][4] for x in scored), reverse=True)[:40], off_mood, below_floor)
         # Best-of-N per artist: keep each artist's best-matching analyzed track (not its most popular).
         # Second tracks only come back if there are too few distinct artists to fill the list.
         best: dict[str, Scored] = {}
@@ -709,24 +830,40 @@ class Pipeline:
             vid, dc = candidate_distance(n, norms, vibes)
             audio = match_score(dc, d_ref)
             tsim, fit = self._tag_fit(c, vid, profiles)
-            score = int(round(W_AUDIO * audio + W_TAGS * 100 * fit))
-            log.info("deep cut candidate: %s - %s score=%d audio=%d deezer_rank=%s artist_best_rank=%s lfm_ratio=%s",
-                     c.name, t.title, score, audio, t.rank, c.best_rank, c.track_ratio.get(t.id))
-            self._trace_scored(c, t, r, audio, tsim, fit, score, vid, deep=True)
-            if score < DEEP_CUT_MIN_SCORE:
+            score = int(round(w_audio * audio + w_tags * 100 * fit))
+            env = envelope_ratio(n, vibes, radii)
+            log.info("deep cut candidate: %s - %s score=%d audio=%d env=%s deezer_rank=%s artist_best_rank=%s lfm_ratio=%s",
+                     c.name, t.title, score, audio, env and round(env, 2), t.rank, c.best_rank, c.track_ratio.get(t.id))
+            reject = ("mood" if env is not None and env > 1.0
+                      else "floor" if score < max(DEEP_CUT_MIN_SCORE, floor_score) else None)
+            self._trace_scored(c, t, r, audio, tsim, fit, score, vid, deep=True, n=n, env=env, tier="deep_cut",
+                               reject=reject)
+            if reject:
                 continue
             deep.append(Scored(key=t.id, artist=t.artist or c.name, vibe_id=vid, score=score,
-                               affinity=DEEP_CUT_AFFINITY, family=None))
+                               affinity=DEEP_CUT_AFFINITY, family=None, tier="deep_cut"))
             info_by_key[t.id] = (c, t, r, n, audio, tsim)
         n_deep = min(sum(min(DEEP_CUT_PER_ARTIST, k) for k in Counter(d.artist.lower() for d in deep).values()),
                      deep_cut_slots(self.limit)[1])
         total = sum(family_weight.values()) or 1
-        chosen = select_diverse(scored, self.limit - n_deep, {v.id: v.share for v in vibes},
-                                {f: n / total for f, n in family_weight.items()})
+        n_disc = self.limit - n_deep
+
+        def too_close(a: Scored, b: Scored) -> bool:  # near-duplicate sound: keep only the better pick
+            return distance(info_by_key[a.key][3], info_by_key[b.key][3]) < dup_d
+
+        chosen = select_diverse(scored, n_disc, {v.id: v.share for v in vibes},
+                                {f: n / total for f, n in family_weight.items()},
+                                tier_quota=tier_quotas(n_disc), too_close=too_close)
         chosen = merge_deep_cuts(chosen, deep, self.limit)
         deep_keys = {d.key for d in deep}
         distinct = len({s.artist.lower() for s in chosen})
-        if distinct < 0.75 * self.limit:
+        if not chosen:
+            raise PipelineError("no_candidates", "No candidates matched this playlist's mood closely enough. "
+                                "Try raising the listener cap.")
+        if len(chosen) < self.limit:
+            rep.warn(f"Only {len(chosen)} strong matches for this playlist's mood under this listener cap. "
+                     "Slide Underground depth to the right for more.")
+        elif distinct < 0.75 * self.limit:
             rep.warn(f"Only {distinct} artists under this listener cap matched your playlist. "
                      "Slide Underground depth to the right for more variety.")
         def to_result(rank: int, sc: Scored) -> Result:
@@ -734,6 +871,8 @@ class Pipeline:
             v = vibes[sc.vibe_id]
             summ = n.summary()
             why = explain(n, n.bpm_raw, v.centroid, v.bpm)
+            if has_mood:
+                why = with_mood(why, mood_words(n.mz, n.tz), self._vibe_words.get(v.id, []))
             if sc.key in deep_keys:
                 why = deep_cut_why(c.name, why)
             elif c.tags:
@@ -744,7 +883,8 @@ class Pipeline:
                 artwork_url=t.artwork_url, preview_url=t.preview_url, preview_proxy_url=preview_path(self.s.settings.preview_secret, t.id),
                 deezer_url=t.link, spotify_search_url=spotify_search_url(t.artist or c.name, t.title),
                 listeners=c.listeners, match_score=max(0, min(100, sc.score)), bpm=summ["bpm"], vibe_id=v.id,
-                why=why, source="deep_cut" if sc.key in deep_keys else c.source, features=FeatureSummary(**summ))
+                why=why, source="deep_cut" if sc.key in deep_keys else c.source, features=FeatureSummary(**summ),
+                tier=sc.tier)
             log.info("result %d: %s - %s score=%d audio=%d tag_sim=%s", rank, t.artist, t.title, sc.score, audio,
                      None if tsim is None else round(tsim, 3))
             return res
@@ -756,7 +896,10 @@ class Pipeline:
             len(results) + 1)]
         if self.trace is not None:
             self.trace["results"] = [{"artist": x.artist, "title": x.title, "score": x.match_score, "source": x.source,
-                                      "listeners": x.listeners, "deezer_id": x.deezer_id} for x in results]
+                                      "listeners": x.listeners, "deezer_id": x.deezer_id, "tier": x.tier,
+                                      "why": x.why, "mood_words": mood_words(info_by_key[x.deezer_id][3].mz,
+                                                                             info_by_key[x.deezer_id][3].tz)}
+                                     for x in results]
         stats = Stats(candidates_considered=considered, candidates_analyzed=len(good),
                       filtered_mainstream=filtered_mainstream, filtered_in_playlist=filtered_in_playlist,
                       no_preview=no_preview)
@@ -765,10 +908,13 @@ class Pipeline:
         rep.done(results, stats, reserve)
 
     # -- helpers --------------------------------------------------------
-    def _trace_scored(self, c, t, r, audio, tsim, fit, score, vid, deep: bool) -> None:
+    def _trace_scored(self, c, t, r, audio, tsim, fit, score, vid, deep: bool, n: Norm | None = None,
+                      env: float | None = None, tier: str | None = None, reject: str | None = None) -> None:
         if self.trace is None:
             return
         self.trace.setdefault("scored", []).append({
+            "env": env, "tier": tier, "reject": reject,
+            "mood": None if n is None or n.mood is None else [round(float(x), 4) for x in n.mood],
             "artist": t.artist or c.name, "cand": c.name, "title": t.title, "deezer_id": t.id, "raw": r,
             "audio": audio, "tag_sim": tsim, "fit": fit, "score": score, "vibe": vid, "deep": deep,
             "affinity": c.affinity, "family": c.family, "listeners": c.listeners, "rank": t.rank,
@@ -818,6 +964,54 @@ class Pipeline:
         out = [r for r in res if r]
         log.info("deep cuts: %s", {c.name: [t.title for t in ts] for c, ts in out})
         return out
+
+    async def _underground_hop(self, keep: list[Cand], cands: dict[str, Cand], playlist_artists: set[str],
+                               seed_mbids: set[str], cap: int) -> list[Cand]:
+        """New candidates one ListenBrainz hop beyond the kept artists whose ListenBrainz user count predicts
+        the underground band (floor..rising_min Last.fm listeners, with slack for the ~10-15x scale), best
+        first, at most UNDERGROUND_HOP_LOOKUPS. Never raises: the hop is a bonus."""
+        lb = self.s.listenbrainz
+        srcs = [c for c in sorted(keep, key=lambda c: -c.affinity) if c.mbid][:UNDERGROUND_HOP_SOURCES]
+        if lb is None or not srcs:
+            return []
+
+        async def work() -> list[Cand]:
+            res = await asyncio.gather(*(lb.similar_artists(c.mbid) for c in srcs), return_exceptions=True)
+            new: dict[str, Cand] = {}
+            for src, rows in zip(srcs, res):
+                if isinstance(rows, BaseException) or not rows or rows[0][2] <= 0:
+                    continue
+                top = rows[0][2]
+                for amb, name, score in rows[:LB_ROWS_PER_SEED]:
+                    k = norm_name(name or "")
+                    if (not k or k in cands or k in playlist_artists or amb in seed_mbids
+                            or artist_is_tribute(name) or NON_ARTIST.search(name)):
+                        continue
+                    aff = 0.9 * math.sqrt(max(0.0, score) / top) * src.affinity  # a hop further: weaker evidence
+                    c = new.setdefault(k, Cand(name, mbid=amb))
+                    c.hits.append((aff, "similar_artist"))
+                    c.origins.add("listenbrainz")
+                    if src.family:
+                        c.seeds.add(src.family)
+                        c.seed_aff[src.family] = max(c.seed_aff.get(src.family, 0.0), aff)
+            if not new:
+                return []
+            pop = await lb.popularity([c.mbid for c in new.values()])
+            lo = 0.5 * min_listeners(cap) / LB_USER_SCALE
+            hi = 1.5 * rising_min(cap) / LB_USER_SCALE
+            picks = [c for c in new.values() if c.mbid in pop and lo <= pop[c.mbid][0] <= hi]
+            for c in picks:
+                c.lb_users = pop[c.mbid][0]
+                cands[norm_name(c.name)] = c
+            picks.sort(key=lambda c: -c.affinity)
+            log.info("underground hop: %d sources, %d new neighbours, %d in the band", len(srcs), len(new), len(picks))
+            return picks[:UNDERGROUND_HOP_LOOKUPS]
+
+        try:
+            return await asyncio.wait_for(work(), UNDERGROUND_HOP_TIMEOUT)
+        except Exception as e:  # noqa: BLE001 - never fail a job because of the hop
+            log.warning("underground hop failed: %s", e)
+            return []
 
     def _tick(self, label: str, lo: float, hi: float, total: int) -> None:
         """Advance progress smoothly inside [lo, hi] with an 'x/total' counter (monotonic via the store)."""
@@ -894,6 +1088,17 @@ class Pipeline:
         lo, hi = float(np.percentile(folded, 10)), float(np.percentile(folded, 90))
         overall = centroid_of(norms)
         labels = vibe_labels([v.centroid for v in vibes], [v.bpm for v in vibes], overall if len(vibes) > 1 else None)
+        self._vibe_words: dict[int, list[str]] = {}
+        if all(n.mz is not None for n in norms):  # mood words: "late-night · mellow · sensual"
+            ref = word_scores(overall.mz, overall.tz) if len(vibes) > 1 else None
+            used: set[str] = set()
+            for v in vibes:
+                words = mood_words(v.centroid.mz, v.centroid.tz, ref=ref, avoid=used)
+                used.update(words)
+                self._vibe_words[v.id] = words
+                labels[v.id] = " · ".join(words) or labels[v.id]
+            if len(set(labels)) < len(labels):  # identical mood words: tell siblings apart by tempo
+                labels = [f"{lab} · {round(v.bpm)} BPM" for lab, v in zip(labels, vibes)]
         out = []
         for v in vibes:
             cen = v.centroid

@@ -39,7 +39,7 @@
     "vibes": [
       {
         "id": 0,
-        "label": "92 BPM · dark · bass-heavy",
+        "label": "late-night · mellow · sensual",
         "share": 0.65,
         "bpm": 92.0,
         "track_count": 26,
@@ -67,7 +67,7 @@
       },
       {
         "id": 1,
-        "label": "124 BPM · bright · busy drums",
+        "label": "groovy · electronic · upbeat",
         "share": 0.35,
         "bpm": 124.0,
         "track_count": 14,
@@ -107,7 +107,7 @@
       "match_score": 91,
       "bpm": 92.3,
       "vibe_id": 0,
-      "why": "Same 92 BPM pocket, matching syncopation, darker low end",
+      "why": "Same late-night/mellow mood, same 92 BPM pocket, matching syncopation",
       "source": "similar_artist",
       "features": {
         "bpm": 92.3,
@@ -119,7 +119,8 @@
         "low_end": 0.79,
         "energy": 0.57,
         "dynamics": 0.42
-      }
+      },
+      "tier": "underground"
     },
     {
       "rank": 2,
@@ -136,7 +137,7 @@
       "match_score": 84,
       "bpm": 61.0,
       "vibe_id": 0,
-      "why": "Half-time take on your 92 BPM groove, same busy hats",
+      "why": "Same mellow mood, half-time take on your 92 BPM groove, same busy hats",
       "source": "similar_track",
       "features": {
         "bpm": 61.0,
@@ -148,7 +149,8 @@
         "low_end": 0.7,
         "energy": 0.52,
         "dynamics": 0.47
-      }
+      },
+      "tier": "underground"
     },
     {
       "rank": 3,
@@ -165,7 +167,7 @@
       "match_score": 77,
       "bpm": 125.1,
       "vibe_id": 1,
-      "why": "Near your 124 BPM, punchier beat",
+      "why": "Same groovy mood, near your 124 BPM, punchier beat",
       "source": "tag",
       "features": {
         "bpm": 125.1,
@@ -177,7 +179,8 @@
         "low_end": 0.41,
         "energy": 0.7,
         "dynamics": 0.33
-      }
+      },
+      "tier": "rising"
     },
     {
       "rank": 4,
@@ -194,7 +197,7 @@
       "match_score": 74,
       "bpm": 91.4,
       "vibe_id": 0,
-      "why": "Deep cut from Example Artist · Same 92 BPM pocket, same sparse drums",
+      "why": "Deep cut from Example Artist · Same late-night mood, same 92 BPM pocket",
       "source": "deep_cut",
       "features": {
         "bpm": 91.4,
@@ -206,7 +209,8 @@
         "low_end": 0.69,
         "energy": 0.55,
         "dynamics": 0.46
-      }
+      },
+      "tier": "deep_cut"
     }
   ],
   "reserve": [
@@ -237,7 +241,8 @@
         "low_end": 0.79,
         "energy": 0.57,
         "dynamics": 0.42
-      }
+      },
+      "tier": "underground"
     },
     {
       "rank": 6,
@@ -266,7 +271,8 @@
         "low_end": 0.79,
         "energy": 0.57,
         "dynamics": 0.42
-      }
+      },
+      "tier": "underground"
     },
     {
       "rank": 7,
@@ -295,7 +301,8 @@
         "low_end": 0.79,
         "energy": 0.57,
         "dynamics": 0.42
-      }
+      },
+      "tier": "underground"
     }
   ],
   "stats": {
