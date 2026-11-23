@@ -288,6 +288,22 @@ def interleave_families(cands: list, weight: dict[str, int]) -> list:
     return out
 
 
+def candidate_support(c: "Cand", weight: dict[str, int]) -> float:
+    """Unsaturated evidence for a candidate: the similarity each distinct seed gave it, summed, with Last.fm
+    seeds weighted by sqrt(their playlist track count), plus a bonus when Last.fm and ListenBrainz agree.
+    `affinity` caps at 1.0, so on most playlists dozens of candidates tie at the top; ordering the
+    rate-limited listener lookups by support instead puts artists that many playlist artists point at
+    first. Held-out benchmark (README): held-out playlist artists among the scored candidates 0.40 -> 0.42,
+    in the top 20 0.23 -> 0.28, at no extra API cost."""
+    tot = 0.0
+    for seed, aff in c.seed_aff.items():
+        w = 1.0 if seed.startswith("lb:") else math.sqrt(weight.get(seed, 1))
+        tot += w * aff
+    if not c.seed_aff:  # tag-only candidates
+        tot = max((a for a, _ in c.hits), default=0.0)
+    return tot + (0.5 if len(c.origins) > 1 else 0.0)
+
+
 def spotify_search_url(artist: str, title: str) -> str:
     return "https://open.spotify.com/search/" + quote(f"{artist} {title}", safe="-_.!~*'()")
 
@@ -351,6 +367,14 @@ class Pipeline:
         try:
             async with self.dl_sem:
                 resp = await self.s.fetcher.get(url)
+            if (resp.status_code != 200 or not resp.content) and key.startswith("dz:"):
+                # Deezer preview URLs are signed for ~15 minutes, but search/top-list responses are cached
+                # for a day: on a feature-cache miss the cached URL is often stale (HTTP 403). Fetch a fresh
+                # URL for the track id once and retry.
+                fresh = await self.s.deezer.get_track(int(key.split(":")[1]))
+                if fresh and fresh.preview_url != url:
+                    async with self.dl_sem:
+                        resp = await self.s.fetcher.get(fresh.preview_url)
             if resp.status_code != 200 or not resp.content:
                 return None
             raw = await analyze_async(self.s.executor, resp.content)  # AnalysisPool rebuilds a dead pool itself
@@ -460,7 +484,7 @@ class Pipeline:
         considered = len(cands)
         if self.trace is not None:
             self.trace["pool"] = {k: {"name": c.name, "affinity": c.affinity, "sources": sorted({h[1] for h in c.hits}),
-                                      "origins": sorted(c.origins), "family": c.family} for k, c in cands.items()}
+                                      "origins": sorted(c.origins), "family": c.family, "seed_aff": c.seed_aff} for k, c in cands.items()}
 
         # 6. filters: playlist artists, tribute acts, listener cap (Last.fm + ListenBrainz), genre tags
         before = len(cands)
@@ -488,7 +512,7 @@ class Pipeline:
                 group = 1
             else:
                 group = 0 if c.lb_users * LB_USER_SCALE <= self.max_listeners else 2
-            return group, -c.affinity
+            return group, -candidate_support(c, family_weight)
         family_weight = {norm_name(a): n for a, n in counts.items()}
         # Interleave seed families so one dominant artist's neighbours can't use up the whole lookup budget;
         # the stable sort then restores the ListenBrainz-popularity grouping.
