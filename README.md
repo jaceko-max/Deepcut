@@ -7,13 +7,13 @@ Paste a public Spotify playlist and Deepcut works out what its tracks feel like 
 ## How it works
 
 1. **Read the playlist.** Spotify's embed page gives the track list and a 30-second preview MP3 per track. Up to 40 tracks are sampled, spread across artists.
-2. **Listen.** Each preview is decoded and analysed with plain numpy and scipy (no librosa): tempo with octave-aware folding, pulse clarity, beat regularity, syncopation, onset density, spectral balance and 12 MFCC coefficients, with mean and standard deviation. A clip takes well under a second.
+2. **Listen.** Each preview is decoded and analysed with plain numpy and scipy (no librosa): tempo with octave-aware folding, pulse clarity, beat regularity, syncopation, onset density, spectral balance and 12 MFCC coefficients, with mean and standard deviation. A pretrained network (Essentia's Discogs-EffNet, run with onnxruntime on CPU) also listens to six 2-second windows and gives a profile over 400 Discogs music styles, which captures sound and production far better than MFCCs. A clip takes about 0.2 s.
 3. **Find your vibes.** Tracks are clustered (k-means, 1 to 3 clusters, chosen by silhouette) so a playlist that mixes 90 BPM slow burners and 124 BPM dance tracks becomes two vibes, not one muddy average.
 4. **Gather candidates.** Last.fm's similar-artist, similar-track and tag graphs, plus ListenBrainz co-listening "similar artists", are walked from your main (primary, non-soundtrack) artists and the tracks closest to each vibe. Artists found by both sources, or by several of your artists, rank higher.
 5. **Cut the mainstream, but stay findable.** Artists in your playlist and tribute/karaoke acts are removed. Last.fm listener counts enforce your cap (default 500K, adjustable from 10K to 1M); ListenBrainz user counts and Deezer fan counts act as backup caps for artists Last.fm undercounts. There is also a floor, so results are not so obscure that you can't find them anywhere: new artists need at least a tenth of the cap in Last.fm listeners (50K at the default cap), never less than 15K and never more than a quarter of the cap.
 6. **Stay in genre.** Your playlist's Last.fm tags become a genre profile (umbrella tags like "pop" or "rock" count less than specific ones like "shoegaze"), per vibe and overall. Candidates whose tags don't overlap enough are dropped before any audio is fetched. Christmas songs, live recordings, karaoke/cover/tribute versions, sped-up/slowed edits, instrumental versions and film/TV soundtrack cuts are filtered out unless your playlist has them too.
-7. **Compare beat to beat.** Up to two Deezer previews per candidate artist get the same analysis, and the best-matching one wins (not just the most popular one). Audio distance is a weighted blend of timbre, tone, groove and tempo (octave-circular, with a small penalty for half/double time), calibrated against how tightly your own playlist clusters. The 0-100 match score is 65% audio match and 35% genre-tag fit, so off-genre tracks score visibly lower.
-8. **Deep cuts from artists you like.** For up to 8 of your playlist's main artists (at least 2 tracks each), Deepcut also looks for their lesser-known songs: tracks outside the artist's 5 biggest on Deezer, at most 60% of the artist's top Deezer popularity rank, not in your playlist, not a live/remix/sped-up/holiday version and not another version of a hit. Up to 3 per artist are analysed and scored the same way. About 30% of the list (6 of 20) are these deep cuts, at most 2 per artist. The listener cap doesn't apply to them, because the artist is known and only the track is obscure. They're marked "Deep cut" in the results.
+7. **Compare beat to beat.** Up to two Deezer previews per candidate artist get the same analysis, and the best-matching one wins (not just the most popular one). Audio distance is 60% style-profile distance (cosine) and 40% the hand-built groups: timbre, tone, groove and tempo (octave-circular, with a small penalty for half/double time), calibrated against how tightly your own playlist clusters. The 0-100 match score is 65% audio match and 35% genre-tag fit, so off-genre tracks score visibly lower.
+8. **Deep cuts from artists you like.** For up to 8 of your playlist's main artists (at least 2 tracks each), Deepcut also looks for their lesser-known songs: tracks outside the artist's 5 biggest on Deezer with at most 30% of the Last.fm listeners of the artist's most-listened track (Deezer's popularity rank is the fallback when Last.fm has no track list), not in your playlist, not a live/remix/sped-up/holiday version and not another version of a hit. Up to 3 per artist are analysed and scored the same way. About 30% of the list (6 of 20) are these deep cuts, at most 2 per artist. The listener cap doesn't apply to them, because the artist is known and only the track is obscure. They're marked "Deep cut" in the results.
 9. **Explain.** Every result says why it matched, for example "Same 92 BPM pocket, matching syncopation; shared tags: shoegaze, dream pop" or "Deep cut from Don Toliver · Near your 112 BPM, same sparse drums".
 
 ## Architecture
@@ -74,6 +74,8 @@ uvicorn app.main:app --reload --port 8000
 
 Audio decoding uses `miniaudio`, so ffmpeg is not required locally (the Docker image installs it as a fallback decoder).
 
+The style model (18 MB) is not in the repo. The Docker image downloads it at build time (pinned by sha256); locally, fetch it once with `python -m app.audio.embed download` (it lands in the git-ignored `backend/.cache/models/`). Without it the backend still works and scores with the DSP features only.
+
 Tests run fully offline (synthetic audio and mocked HTTP):
 
 ```bash
@@ -112,6 +114,8 @@ Open <http://localhost:3000>. With `NEXT_PUBLIC_API_URL` unset, the frontend run
 | `GLOBAL_JOB_LIMIT` | `30` | max analyses started across all clients per 10 minutes (429 `too_many_jobs`) |
 | `PREVIEW_SECRET` | random per start | signs preview links; set a fixed value (Render generates one) so play buttons survive restarts |
 | `ENABLE_DOCS` | unset | set to `1` to serve `/docs`, `/redoc` and `/openapi.json` (off by default) |
+| `EMBEDDINGS` | `onnx` | `off` scores with the hand-built DSP features only; `onnx` uses the style model when it is installed |
+| `EMBEDDING_MODEL_PATH` | `backend/.cache/models/discogs-effnet-bsdynamic-1.onnx` (`/opt/models/...` in Docker) | where the style model lives |
 
 ## Deploy
 
@@ -130,15 +134,34 @@ The free plan sleeps when idle and has an ephemeral disk, so the first request a
 2. Add the environment variable `NEXT_PUBLIC_API_URL` set to your Render URL (no trailing slash). Optionally add `NEXT_PUBLIC_REPO_URL` (your GitHub repo URL) to show a "Source on GitHub" link in the footer.
 3. Deploy, then copy the production URL into the backend's `CORS_ORIGINS` on Render and redeploy the backend if needed.
 
+## Accuracy benchmark
+
+Changes to scoring and candidate search are checked against 8 public playlists of different genres (a user R&B/rap mix, lofi beats, RapCaviar, All New Indie, Jazz Classics, Kickass Metal, mint, Hot Country) with in-process runs of the pipeline:
+
+- **Held-out artists:** 20% of a playlist's artists (all their tracks) are removed, the listener cap is lifted, and we measure how many come back: in the candidate pool, among the scored candidates, and in the top 20 by match score (R@20), plus how well the score ranks them above the other candidates (AUC).
+- **Own vs other playlists:** AUC of the audio distance for a playlist's own tracks (leave-one-out) against the other playlists' tracks.
+- **Genre coherence:** mean Last.fm tag cosine of the top-20 discovery results to the playlist, from raw tags independent of the pipeline's tag weighting.
+
+| mean of 8 playlists | before | after |
+| --- | --- | --- |
+| own vs other playlist AUC | 0.855 | 0.949 |
+| held-out artists among scored candidates | 0.40 | 0.42 |
+| held-out artists in top 20 (R@20) | 0.20 | 0.28 |
+| held-out AUC, final score / audio only | 0.65 / 0.53 | 0.68 / 0.59 |
+| genre coherence of top 20 | 0.70 | 0.69 |
+
+Re-scoring the same candidates without the style model gives R@20 0.21 and audio AUC 0.50, so most of the ranking gain comes from the learned style profile, the rest from ordering Last.fm lookups by how many playlist artists point at a candidate.
+
 ## Attribution
 
 - Playlist data and 30-second previews: Spotify.
 - Candidate previews and artwork: Deezer.
 - Similarity, tags and listener counts: Last.fm.
 - Co-listening similar artists and popularity: ListenBrainz (MetaBrainz Foundation).
+- Style model: Discogs-EffNet (`discogs-effnet-bsdynamic-1`) from the [Essentia models](https://essentia.upf.edu/models/) by the Music Technology Group, Universitat Pompeu Fabra, licensed under [Creative Commons BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) (non-commercial use only; commercial licences are available from UPF). Alonso-Jiménez, Serra and Bogdanov, "Music Representation Learning Based on Editorial Metadata from Discogs", ISMIR 2022. Deepcut uses the model file unmodified.
 
 Deepcut is an independent project and is not affiliated with or endorsed by Spotify, Deezer, Last.fm or ListenBrainz. Previews are streamed from the providers and are never stored.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Copyright (c) 2026 Deepcut contributors.
+MIT, see [LICENSE](LICENSE). Copyright (c) 2026 Deepcut contributors. The MIT license covers Deepcut's code only; the style model keeps its own non-commercial license (see Attribution).

@@ -16,9 +16,9 @@ POWER spectrum, then log10(1 + 10000 * x). Up to 6 patches of 128 frames (~2 s) 
 through the network; the 400 style activations are averaged over patches.
 
 We keep the style activations rather than the 1280-d penultimate embedding: on the accuracy benchmark
-the style profile separated a playlist's own tracks from other playlists' as well as the embedding
-(AUC 0.95) and ranked held-out playlist artists better (audio AUC 0.65 vs 0.62), at a third of the
-cache size. 6 patches scored the same as 14 at less than half the inference time.
+both separate a playlist's own tracks from other playlists' equally well (AUC 0.95) and tie on ranking
+held-out playlist artists (style: R@20 0.24, audio AUC 0.56; embedding: 0.21, 0.59, same clips), and the
+style profile is a third of the cache size. 6 patches scored as well as 14 at less than half the cost.
 """
 from __future__ import annotations
 

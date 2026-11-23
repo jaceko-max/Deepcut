@@ -13,7 +13,7 @@ from app.scoring.vibes import Vibe, centroid_of
 # Hand-built DSP groups (tempo, groove, tone, MFCC timbre) plus a learned "style" group: cosine distance
 # between Discogs-EffNet style-activation profiles (app/audio/embed.py). On the accuracy benchmark
 # (8 playlists, see README) adding style at 0.6 raised own-vs-foreign-playlist AUC from 0.86 to 0.95 and
-# the held-out-artist audio AUC from 0.53 to ~0.65. The DSP groups keep their earlier relative weights
+# the held-out-artist audio AUC from 0.50 to 0.59 (same candidates). DSP groups keep their earlier relative weights
 # (0.10/0.20/0.35/0.35, chosen by per-group AUC) and share the remaining 0.4. Without a model (EMBEDDINGS=off
 # or a clip without style) distance() rescales the DSP part to the full range, so scores stay comparable.
 W_STYLE = 0.60
