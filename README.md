@@ -170,6 +170,21 @@ Changes to scoring and candidate search are checked against 8 public playlists o
 
 Re-scoring the same candidates without the style model gives R@20 0.21 and audio AUC 0.50, so most of the ranking gain comes from the learned style profile, the rest from ordering Last.fm lookups by how many playlist artists point at a candidate.
 
+**Mood rework (Nov 2026).** Two more measures: **mood fit**, the mean cosine of the top-20 results' mood vectors to the playlist's mood centroid (the playlists' own tracks score 0.71 leave-one-out), and **in envelope**, the share of top-20 results inside the playlist's own mood envelope. Both are computed from the same mood vectors for every run.
+
+| mean of 8 playlists | before | after |
+| --- | --- | --- |
+| mood fit of top 20 | 0.767 | 0.810 |
+| top 20 inside the playlist's mood envelope | 0.969 | 1.000 |
+| popularity mix (deep cut / rising / underground, of 20) | 5.4 / 12.4 / 2.9 | 5.1 / 8.9 / 6.0 |
+| own vs other playlist AUC | 0.949 | 0.944 |
+| genre coherence of top 20 | 0.692 | 0.676 |
+| held-out AUC, same candidates re-scored (final / audio) | 0.69 / 0.59 | 0.74 / 0.67 |
+| held-out R@20, same candidates re-scored | 0.28 | 0.26 |
+| held-out R@20, live run | 0.28 | 0.15 |
+
+The live held-out recall drops because the popularity mix spends part of the lookup and analysis budget on small (under 100K) artists, while held-out playlist artists are mostly big: old scoring on the new candidate pool gets R@20 0.21. Mood-based scoring ranks held-out artists' audio better (AUC 0.59 -> 0.67 on identical candidates). Clustering vibes on mood instead of DSP was tried and lost (audio AUC 0.61 vs 0.67), so vibes are clustered as before and only labelled by mood.
+
 ## Attribution
 
 - Playlist data and 30-second previews: Spotify.

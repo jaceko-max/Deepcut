@@ -130,7 +130,7 @@ def word_scores(z: np.ndarray, tz: np.ndarray | None) -> dict[str, float]:
 
 
 def mood_words(z: np.ndarray | None, tz: np.ndarray | None, n: int = 3, ref: dict[str, float] | None = None,
-               avoid: set[str] = frozenset(), min_score: float = 0.35) -> list[str]:
+               avoid: set[str] = frozenset(), min_score: float = 0.2) -> list[str]:
     """Up to `n` words, strongest first, one per group. With `ref` (another word-score dict, e.g. the whole
     playlist) half of each score is the difference from it, so sibling vibes read differently; words in
     `avoid` (already used by a sibling) are skipped while alternatives remain."""
