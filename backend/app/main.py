@@ -34,8 +34,13 @@ def error_response(status: int, code: str, message: str, headers: dict | None = 
 
 
 def client_ip(request: Request) -> str:
-    """Right-most X-Forwarded-For entry: that one is appended by the platform proxy (Render); anything to its
-    left is client-supplied and spoofable."""
+    """The visitor's address. Render sits behind Cloudflare, which overwrites CF-Connecting-IP/True-Client-IP
+    with the real client address. Render's own proxy appends *its* address to X-Forwarded-For, so the
+    right-most entry there is only a fallback for other hosts (and every left entry is client-spoofable)."""
+    for header in ("cf-connecting-ip", "true-client-ip"):
+        value = (request.headers.get(header) or "").strip()
+        if value:
+            return value
     fwd = request.headers.get("x-forwarded-for")
     if fwd:
         last = fwd.split(",")[-1].strip()

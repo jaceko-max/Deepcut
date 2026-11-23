@@ -107,6 +107,7 @@ Open <http://localhost:3000>. With `NEXT_PUBLIC_API_URL` unset, the frontend run
 | `ANALYSIS_WORKERS` | `2` | audio process pool size |
 | `JOB_TTL_SECONDS` | `3600` | |
 | `JOB_TIMEOUT_SECONDS` | `420` | hard limit for one search; cold-cache searches on Render's free tier take about 2–4 minutes |
+| `IP_JOB_LIMIT` | `6` | searches per visitor per 10 minutes; visitors are told apart by Cloudflare's `CF-Connecting-IP` header on Render |
 | `HTTP_USER_AGENT` | `Deepcut/0.1` | also sent to ListenBrainz (no key needed; if it is down, results fall back to Last.fm only with a warning) |
 | `LOG_LEVEL` | `info` | |
 | `GLOBAL_JOB_LIMIT` | `30` | max analyses started across all clients per 10 minutes (429 `too_many_jobs`) |

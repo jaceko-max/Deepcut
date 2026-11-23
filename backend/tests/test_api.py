@@ -298,3 +298,30 @@ def test_forged_preview_signature_rejected_without_upstream_call(client, setting
         other = client.get(f"/api/preview/79?sig={preview_sig(settings.preview_secret, 78)}", follow_redirects=False)
     assert bad.status_code == 404 and other.status_code == 404
     assert route.call_count == 0
+
+
+def test_cloudflare_client_ip_separates_visitors_behind_render(client):
+    # On Render every request carries Render's proxy as the last X-Forwarded-For entry; Cloudflare's
+    # CF-Connecting-IP is what tells visitors apart.
+    proxy = {"x-forwarded-for": "9.9.9.9, 10.0.0.1"}
+    for i in range(3):
+        r = client.post("/api/analyze", json={"playlist_url": PID}, headers={**proxy, "cf-connecting-ip": "1.1.1.1"})
+        assert r.status_code == 202
+    assert client.post("/api/analyze", json={"playlist_url": PID},
+                       headers={**proxy, "cf-connecting-ip": "1.1.1.1"}).status_code == 429
+    assert client.post("/api/analyze", json={"playlist_url": PID},
+                       headers={**proxy, "cf-connecting-ip": "2.2.2.2"}).status_code == 202
+
+
+def test_true_client_ip_used_when_cf_header_missing():
+    from starlette.requests import Request
+
+    scope = {"type": "http", "headers": [(b"true-client-ip", b"3.3.3.3"), (b"x-forwarded-for", b"10.0.0.1")],
+             "client": ("127.0.0.1", 1)}
+    assert main.client_ip(Request(scope)) == "3.3.3.3"
+
+
+def test_default_ip_job_limit_is_six():
+    from app.config import Settings
+
+    assert Settings().ip_job_limit == 6

@@ -22,3 +22,6 @@ next-env.d.ts
 .DS_Store
 .vercel/
 coverage/
+
+# Claude Code agent worktrees
+.claude/

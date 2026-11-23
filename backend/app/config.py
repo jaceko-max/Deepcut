@@ -50,7 +50,7 @@ class Settings:
     log_level: str = "info"
     job_timeout_seconds: int = 420
     max_queued_jobs: int = 10
-    ip_job_limit: int = 3
+    ip_job_limit: int = 6
     ip_job_window_seconds: int = 600
     global_job_limit: int = 30  # max job creations across all clients per ip_job_window_seconds
     preview_ip_limit: int = 60  # /api/preview requests per IP per preview_window_seconds
@@ -84,6 +84,7 @@ class Settings:
             analysis_workers=_int("ANALYSIS_WORKERS", 2),
             job_ttl_seconds=_int("JOB_TTL_SECONDS", 3600),
             job_timeout_seconds=_int("JOB_TIMEOUT_SECONDS", 420),
+            ip_job_limit=_int("IP_JOB_LIMIT", 6),
             http_user_agent=env("HTTP_USER_AGENT", "Deepcut/0.1"),
             log_level=env("LOG_LEVEL", "info"),
             global_job_limit=_int("GLOBAL_JOB_LIMIT", 30),

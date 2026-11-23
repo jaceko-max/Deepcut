@@ -15,7 +15,8 @@ def fast_backoff(monkeypatch):
 @pytest.fixture
 def settings(tmp_path):
     return Settings(lastfm_api_key="testkey", cache_dir=str(tmp_path / "cache"), analysis_workers=0,
-                    spotify_playlist_source="auto", rate_limit_scale=100.0)
+                    spotify_playlist_source="auto", rate_limit_scale=100.0,
+                    ip_job_limit=3)
 
 
 @pytest.fixture(scope="session")
