@@ -75,6 +75,9 @@ DEEP_CUT_MIN_TRACKS = 2    # an artist needs >= 2 playlist tracks to count as "a
 DEEP_CUT_TOP_FETCH = 50    # Deezer /artist/{id}/top?limit=50, ordered by popularity with a `rank` field
 DEEP_CUT_SKIP_TOP = 5      # the artist's 5 most popular tracks (by list position and by rank) are hits
 DEEP_CUT_RANK_RATIO = 0.60 # Deezer rank is log-like (hits ~800K, obscure ~300K): <= 60% of the artist's best
+DEEP_CUT_LFM_RATIO = 0.30  # Last.fm: a deep cut has <= 30% of the listeners of the artist's top track
+DEEP_CUT_LFM_TOP = 200     # artist.getTopTracks limit
+DEEP_CUT_LFM_MIN_TRACKS = 10  # fewer Last.fm tracks than this: fall back to the Deezer rank ratio
 DEEP_CUT_CLIPS = 3         # analyzed per artist (<= 24 extra clips)
 DEEP_CUT_PER_ARTIST = 2    # kept per artist in the results
 DEEP_CUT_SHARE = (0.25, 0.30, 0.35)  # (min, target, max) share of results
@@ -182,11 +185,40 @@ def deep_cut_artists(counts: Counter, n: int = DEEP_CUT_ARTISTS) -> list[str]:
     return [a for a in sorted(counts, key=lambda a: (-counts[a], a)) if counts[a] >= DEEP_CUT_MIN_TRACKS][:n]
 
 
+@dataclass
+class LastfmPopularity:
+    """Per-track Last.fm listeners for one artist (artist.getTopTracks), indexed by normalised title."""
+    listeners: dict[str, int]
+    top: int          # listeners of the artist's most-listened track
+    floor: int        # smallest listener count in the (possibly truncated) list
+
+    @classmethod
+    def build(cls, rows: list[tuple[str, int, int]]) -> "LastfmPopularity | None":
+        idx: dict[str, int] = {}
+        for title, listeners, _ in rows:
+            k = norm_title(title)
+            if k and listeners > idx.get(k, -1):
+                idx[k] = listeners
+        if len(idx) < DEEP_CUT_LFM_MIN_TRACKS or max(idx.values()) <= 0:
+            return None
+        return cls(idx, max(idx.values()), min(idx.values()))
+
+    def ratio(self, title: str) -> float:
+        """Track listeners / the artist's top track. Titles missing from the list are rarer than its last
+        entry, so they get the floor ratio (an upper bound)."""
+        n = self.listeners.get(norm_title(title))
+        return (self.floor if n is None else n) / self.top
+
+
 def pick_deep_cuts(artist: str, top: list[DeezerTrack], playlist_titles: set[str], playlist_isrcs: set[str],
-                   allowed: set[str] = frozenset(), n: int = DEEP_CUT_CLIPS) -> list[DeezerTrack]:
+                   allowed: set[str] = frozenset(), n: int = DEEP_CUT_CLIPS,
+                   lfm: "LastfmPopularity | None" = None) -> list[DeezerTrack]:
     """Lesser-known tracks by `artist` from its Deezer top list (popularity order): not in the playlist,
-    not among its DEEP_CUT_SKIP_TOP hits (by position or by rank), rank <= DEEP_CUT_RANK_RATIO x its best,
-    clean (no live/holiday/sped-up/remix/interlude...), one version per base title."""
+    not among its DEEP_CUT_SKIP_TOP hits (by position or by rank), clean (no live/holiday/sped-up/remix/
+    interlude...), one version per base title, and obscure enough: with Last.fm data, track listeners
+    <= DEEP_CUT_LFM_RATIO x the artist's top track (Last.fm counts unique listeners, which separates album
+    tracks from hits far better than Deezer's log-like rank); without it, Deezer rank <= DEEP_CUT_RANK_RATIO
+    x the artist's best."""
     own = [t for t in top if norm_name(t.artist) == norm_name(artist)]  # drop features on others' songs
     if not own:
         return []
@@ -201,7 +233,10 @@ def pick_deep_cuts(artist: str, top: list[DeezerTrack], playlist_titles: set[str
         base = norm_title(t.title)
         if t.id in hits or base in seen or (t.isrc and t.isrc in playlist_isrcs):
             continue
-        if best is None or not t.rank or t.rank > DEEP_CUT_RANK_RATIO * best:
+        if lfm is not None:
+            if lfm.ratio(t.title) > DEEP_CUT_LFM_RATIO:
+                continue
+        elif best is None or not t.rank or t.rank > DEEP_CUT_RANK_RATIO * best:
             continue
         if DEEP_CUT_SKIP.search(t.title) or is_contaminated(t.title, t.album, t.artist, allowed):
             continue  # a rejected live take must not block the studio version further down
@@ -294,6 +329,7 @@ class Cand:
 class DeepCutArtist(Cand):
     """A playlist artist whose lesser-known tracks are offered as deep cuts (scored like a candidate)."""
     best_rank: int | None = None
+    track_ratio: dict = field(default_factory=dict)  # deezer id -> Last.fm listeners / artist's top track
 
 
 class Pipeline:
@@ -302,6 +338,8 @@ class Pipeline:
         self._artist_tags: dict[str, dict] = {}
         self.dl_sem = asyncio.Semaphore(8)
         self._ticks: dict[str, int] = {}
+        # In-process instrumentation for benchmarks (scratch scripts set a dict); never part of API output.
+        self.trace: dict | None = None
 
     # -- audio features -------------------------------------------------
     async def _features(self, key: str, url: str) -> dict | None:
@@ -398,6 +436,9 @@ class Pipeline:
         rep.set_playlist(PlaylistInfoOut(id=data.id, name=data.name, owner=data.owner, image_url=data.image_url,
                                          total_tracks=len(data.tracks), analyzed_tracks=len(pl), source=data.source))
 
+        if self.trace is not None:
+            keys = [k for (_, k, _), r in zip(usable, raws) if r]
+            self.trace["playlist"] = [(t.primary_artist, t.title, r, k) for (t, r), k in zip(pl, keys)]
         scaler = MfccScaler.fit([r for _, r in pl])
         norms = [normalize(r, scaler) for _, r in pl]
         vibes = build_vibes(norms)
@@ -415,6 +456,9 @@ class Pipeline:
         profiles = await self._tag_profiles(counts, seeds, pl, vibes)
         cands, seed_mbids = await self._candidates(tracks, pl, norms, vibes, seeds, profiles)
         considered = len(cands)
+        if self.trace is not None:
+            self.trace["pool"] = {k: {"name": c.name, "affinity": c.affinity, "sources": sorted({h[1] for h in c.hits}),
+                                      "origins": sorted(c.origins), "family": c.family} for k, c in cands.items()}
 
         # 6. filters: playlist artists, tribute acts, listener cap (Last.fm + ListenBrainz), genre tags
         before = len(cands)
@@ -562,6 +606,9 @@ class Pipeline:
             if len(ranked) >= MAX_LISTENER_LOOKUPS and len(keep) >= self.limit + 5:
                 break
         self.rep.progress(0.53, "Checked listener counts and genre tags")
+        if self.trace is not None:
+            self.trace["looked_up"] = {norm_name(c.name): c.listeners for c in ranked}
+            self.trace["keep"] = [norm_name(c.name) for c in keep]
         log.info("candidates: considered=%d looked_up=%d kept=%d mainstream=%d off_genre=%d",
                  considered, len(ranked), len(keep), filtered_mainstream, filtered_genre)
         if not keep:
@@ -617,6 +664,7 @@ class Pipeline:
                         family=c.family)
             scored.append(sc)
             info_by_key[t.id] = (c, t, r, n, audio, tsim)
+            self._trace_scored(c, t, r, audio, tsim, fit, score, vid, deep=False)
         log.info("d_ref=%.3f audio scores: %s", d_ref, sorted((info_by_key[x.key][4] for x in scored), reverse=True)[:40])
         # Best-of-N per artist: keep each artist's best-matching analyzed track (not its most popular).
         # Second tracks only come back if there are too few distinct artists to fill the list.
@@ -633,8 +681,9 @@ class Pipeline:
             audio = match_score(dc, d_ref)
             tsim, fit = self._tag_fit(c, vid, profiles)
             score = int(round(W_AUDIO * audio + W_TAGS * 100 * fit))
-            log.info("deep cut candidate: %s - %s score=%d audio=%d deezer_rank=%s artist_best_rank=%s",
-                     c.name, t.title, score, audio, t.rank, c.best_rank)
+            log.info("deep cut candidate: %s - %s score=%d audio=%d deezer_rank=%s artist_best_rank=%s lfm_ratio=%s",
+                     c.name, t.title, score, audio, t.rank, c.best_rank, c.track_ratio.get(t.id))
+            self._trace_scored(c, t, r, audio, tsim, fit, score, vid, deep=True)
             if score < DEEP_CUT_MIN_SCORE:
                 continue
             deep.append(Scored(key=t.id, artist=t.artist or c.name, vibe_id=vid, score=score,
@@ -670,6 +719,9 @@ class Pipeline:
                 why=why, source="deep_cut" if sc.key in deep_keys else c.source, features=FeatureSummary(**summ)))
             log.info("result %d: %s - %s score=%d audio=%d tag_sim=%s", rank, t.artist, t.title, sc.score, audio,
                      None if tsim is None else round(tsim, 3))
+        if self.trace is not None:
+            self.trace["results"] = [{"artist": x.artist, "title": x.title, "score": x.match_score, "source": x.source,
+                                      "listeners": x.listeners, "deezer_id": x.deezer_id} for x in results]
         stats = Stats(candidates_considered=considered, candidates_analyzed=len(good),
                       filtered_mainstream=filtered_mainstream, filtered_in_playlist=filtered_in_playlist,
                       no_preview=no_preview)
@@ -678,6 +730,15 @@ class Pipeline:
         rep.done(results, stats)
 
     # -- helpers --------------------------------------------------------
+    def _trace_scored(self, c, t, r, audio, tsim, fit, score, vid, deep: bool) -> None:
+        if self.trace is None:
+            return
+        self.trace.setdefault("scored", []).append({
+            "artist": t.artist or c.name, "cand": c.name, "title": t.title, "deezer_id": t.id, "raw": r,
+            "audio": audio, "tag_sim": tsim, "fit": fit, "score": score, "vibe": vid, "deep": deep,
+            "affinity": c.affinity, "family": c.family, "listeners": c.listeners, "rank": t.rank,
+            "lfm_ratio": getattr(c, "track_ratio", {}).get(t.id)})
+
     async def _deep_cuts(self, artists: list[str], tracks: list[PlaylistTrack], allowed: set[str]
                          ) -> list[tuple["DeepCutArtist", list[DeezerTrack]]]:
         """[(artist, deep-cut tracks)] for the playlist's core artists. Never raises: deep cuts are a bonus."""
@@ -695,7 +756,11 @@ class Pipeline:
                     if not aid:
                         return None
                     top = await s.deezer.artist_top(aid, DEEP_CUT_TOP_FETCH, a)
-                    picks = pick_deep_cuts(a, top, titles, isrcs, allowed)
+                    try:
+                        lfm = LastfmPopularity.build(await s.lastfm.artist_top_tracks(a, DEEP_CUT_LFM_TOP))
+                    except UpstreamError:
+                        lfm = None
+                    picks = pick_deep_cuts(a, top, titles, isrcs, allowed, lfm=lfm)
                     if not picks:
                         return None
                     try:
@@ -706,7 +771,8 @@ class Pipeline:
                     log.warning("deep cuts for %s failed: %s", a, e)
                     return None
                 own = [t.rank for t in top if t.rank and norm_name(t.artist) == norm_name(a)]
-                c = DeepCutArtist(a, listeners=listeners, best_rank=max(own) if own else None)
+                c = DeepCutArtist(a, listeners=listeners, best_rank=max(own) if own else None,
+                                  track_ratio={t.id: round(lfm.ratio(t.title), 3) for t in picks} if lfm else {})
                 return c, picks
 
         try:
