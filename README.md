@@ -176,7 +176,7 @@ Re-scoring the same candidates without the style model gives R@20 0.21 and audio
 | --- | --- | --- |
 | mood fit of top 20 | 0.767 | 0.810 |
 | top 20 inside the playlist's mood envelope | 0.969 | 1.000 |
-| popularity mix (deep cut / rising / underground, of 20) | 5.4 / 12.4 / 2.9 | 5.1 / 8.9 / 6.0 |
+| popularity mix (deep cut / rising / underground, of 20) | 4.9 / 12.3 / 2.9 | 5.0 / 9.0 / 6.0 |
 | own vs other playlist AUC | 0.949 | 0.944 |
 | genre coherence of top 20 | 0.692 | 0.676 |
 | held-out AUC, same candidates re-scored (final / audio) | 0.69 / 0.59 | 0.74 / 0.67 |
