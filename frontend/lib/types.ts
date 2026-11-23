@@ -65,7 +65,7 @@ export interface PlaylistInfo {
   image_url: string | null;
   total_tracks: number;
   analyzed_tracks: number;
-  source: "spotify_api" | "spotify_embed";
+  source: "spotify_api" | "spotify_embed" | "pasted";
 }
 
 export interface PlaylistProfile {
@@ -121,13 +121,22 @@ export interface JobResponse {
   playlist: PlaylistInfo | null;
   playlist_profile: PlaylistProfile | null;
   results: Result[];
+  /** Next-best analyzed candidates that did not make the list; used for client-side refine. Optional. */
+  reserve?: Result[];
   stats: JobStats | null;
   warnings: string[];
   error: JobError | null;
 }
 
+export interface PastedTrack {
+  artist: string;
+  title: string;
+}
+
+/** Exactly one of playlist_url or tracks. */
 export interface AnalyzeRequest {
-  playlist_url: string;
+  playlist_url?: string;
+  tracks?: PastedTrack[];
   max_listeners: number;
   limit: number;
 }

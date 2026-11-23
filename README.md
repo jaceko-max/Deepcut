@@ -16,6 +16,20 @@ Paste a public Spotify playlist and Deepcut works out what its tracks feel like 
 8. **Deep cuts from artists you like.** For up to 8 of your playlist's main artists (at least 2 tracks each), Deepcut also looks for their lesser-known songs: tracks outside the artist's 5 biggest on Deezer, at most 60% of the artist's top Deezer popularity rank, not in your playlist, not a live/remix/sped-up/holiday version and not another version of a hit. Up to 3 per artist are analysed and scored the same way. About 30% of the list (6 of 20) are these deep cuts, at most 2 per artist. The listener cap doesn't apply to them, because the artist is known and only the track is obscure. They're marked "Deep cut" in the results.
 9. **Explain.** Every result says why it matched, for example "Same 92 BPM pocket, matching syncopation; shared tags: shoegaze, dream pop" or "Deep cut from Don Toliver · Near your 112 BPM, same sparse drums".
 
+## Features
+
+- **Paste tracks instead of a link.** The form has a "Spotify link | Paste tracks" switch. Paste one track per line as `Artist - Title` or `Title by Artist`, or a CSV exported by Exportify (`"Track Name"`, `"Artist Name(s)"`). Up to 200 tracks, with a live line counter. Pasted tracks have no previews, so Deezer matching finds the audio, and the 100-track embed limit no longer applies.
+- **Vibe filter.** When your playlist has more than one vibe, chips above the results ("All", then each vibe with its share) filter the list. The choice lives in the URL as `?vibe=` next to `?job=`.
+- **Thumbs up / down and refine.** Every result has More like this / Less like this buttons. The backend returns a reserve pool of the next ~40 best analyzed candidates; the browser re-scores list plus reserve (`score + 60·similarity to liked − 60·similarity to disliked`, using tempo, groove, tone features, artist, source and vibe), drops disliked tracks and pulls in the best reserve tracks. A note offers Undo last and Reset. Feedback is kept in `localStorage` per job.
+- **Permanent share links.** "Share results" packs the finished list (no reserve) into the URL fragment (`#r=…`, deflate-raw + base64url; plain base64url if `CompressionStream` is missing). The link renders read-only without the server and never reaches one, because fragments are not sent in requests. Play buttons still work because `preview_proxy_url` links are HMAC-signed (keep `PREVIEW_SECRET` fixed).
+- **Copy / export.** Copy the list as `1. Artist – Title` lines, or download `.txt` or `.csv`.
+
+## API
+
+- `POST /api/analyze` takes `{playlist_url | tracks: [{artist, title}], max_listeners?, limit?}`. Exactly one of `playlist_url` or `tracks` (1 to 200 items, artist up to 200 and title up to 300 characters) is required, otherwise `400 invalid_request`. Returns `202 {job_id, status, poll_url}`. The request body limit is 64 KB (it was 16 KB) so 200 pasted lines fit.
+- `GET /api/jobs/{id}` returns the job. `playlist.source` is `spotify_api`, `spotify_embed` or `pasted`. When done, `results` holds the list and the optional `reserve` (default `[]`) holds up to ~40 more analyzed candidates that passed the same filters, same shape as `results`, with `rank` continuing after the list and one per artist where possible.
+- `GET /api/preview/{deezer_id}?sig=…` redirects to a fresh preview.
+
 ## Architecture
 
 ```
