@@ -64,6 +64,13 @@ describe("share link", () => {
     await expect(decodeShare("z.AAAA")).rejects.toThrow();
   });
 
+  it("builds a link without ?job= or ?vibe=", async () => {
+    const { buildShareUrl } = await import("./share");
+    const url = await buildShareUrl(input(), "http://h:3000/?job=abc&vibe=1");
+    expect(url.startsWith("http://h:3000/#r=z.")).toBe(true);
+    expect(url).not.toContain("job=");
+  });
+
   it("recognizes the hash and base64url is lossless", () => {
     expect(shareTokenFromHash("#r=z.abc")).toBe("z.abc");
     expect(shareTokenFromHash("#other")).toBeNull();

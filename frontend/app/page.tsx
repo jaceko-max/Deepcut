@@ -30,9 +30,11 @@ export default function Home() {
   const [waking, setWaking] = useState(false);
   const [submitError, setSubmitError] = useState<ApiError | null>(null);
   const lastReq = useRef<AnalyzeRequest | null>(null);
-  const { job, phase, retrying } = useJob(jobId);
   const [shared, setShared] = useState<JobResponse | null>(null);
   const [shareFailed, setShareFailed] = useState(false);
+  // a share fragment wins over ?job=: it must render without (and never poll) the server
+  const activeId = shared || shareFailed ? null : jobId;
+  const { job, phase, retrying } = useJob(activeId);
 
   // Read ?job= on mount and on back/forward; wake the server with a health ping.
   useEffect(() => {
@@ -83,7 +85,7 @@ export default function Home() {
   }, []);
 
   const showForm = !jobId && !submitting && !shared && !shareFailed;
-  const running = (jobId && (phase === "polling" || phase === "idle")) || submitting;
+  const running = (activeId && (phase === "polling" || phase === "idle")) || submitting;
 
   return (
     <>
@@ -140,11 +142,11 @@ export default function Home() {
 
         {running && <JobProgress job={job} waking={waking} retrying={retrying} />}
 
-        {jobId && job && phase !== "expired" && job.playlist_profile && phase !== "done" && (
+        {activeId && job && phase !== "expired" && job.playlist_profile && phase !== "done" && (
           <PlaylistProfile playlist={job.playlist} profile={job.playlist_profile} />
         )}
 
-        {jobId && phase === "done" && job && (
+        {activeId && phase === "done" && job && (
           <>
             {job.playlist_profile && <PlaylistProfile playlist={job.playlist} profile={job.playlist_profile} />}
             <ResultList job={job} />

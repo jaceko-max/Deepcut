@@ -209,5 +209,6 @@ export function shareTokenFromHash(hash: string): string | null {
 }
 
 export async function buildShareUrl(input: ShareInput, base: string): Promise<string> {
-  return `${base.split("#")[0]}${SHARE_PREFIX}${await encodeShare(input)}`;
+  const u = new URL(base); // drop ?job= and ?vibe=: the link must not depend on the server
+  return `${u.origin}${u.pathname}${SHARE_PREFIX}${await encodeShare(input)}`;
 }
