@@ -10,11 +10,16 @@ from app.audio.dsp import octave_distance
 from app.scoring.normalize import Norm
 from app.scoring.vibes import Vibe, centroid_of
 
-# Re-weighted from per-group AUC (own-playlist vs foreign tracks, 12 playlist pairs): timbre 0.68-0.85,
-# tone 0.62-0.81, groove 0.46-0.72, tempo 0.47-0.63. The old 0.25/0.30/0.25/0.20 with a 0.15 tempo
-# scale saturated the tempo term (~0.2 added to every distance), pushing D_ref to the 0.25 clamp so
-# everything scored 80-96. New weights: mean AUC 0.694 -> ~0.81.
-W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.10, 0.20, 0.35, 0.35
+# Hand-built DSP groups (tempo, groove, tone, MFCC timbre) plus a learned "style" group: cosine distance
+# between Discogs-EffNet style-activation profiles (app/audio/embed.py). On the accuracy benchmark
+# (8 playlists, see README) adding style at 0.6 raised own-vs-foreign-playlist AUC from 0.86 to 0.95 and
+# the held-out-artist audio AUC from 0.53 to ~0.65. The DSP groups keep their earlier relative weights
+# (0.10/0.20/0.35/0.35, chosen by per-group AUC) and share the remaining 0.4. Without a model (EMBEDDINGS=off
+# or a clip without style) distance() rescales the DSP part to the full range, so scores stay comparable.
+W_STYLE = 0.60
+_DSP = 1.0 - W_STYLE
+W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.10 * _DSP, 0.20 * _DSP, 0.35 * _DSP, 0.35 * _DSP
+STYLE_SCALE = 0.60  # cosine distance at which the style group saturates (own tracks ~0.05-0.35, others ~0.35-0.9)
 TEMPO_SCALE = 0.30
 FAMILY_SHARE = 0.3  # at most ~30% of results may come from one playlist artist's neighbourhood
 FAMILY_MIN = 2
@@ -25,12 +30,22 @@ def _rms(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.sqrt(np.mean((a - b) ** 2)))
 
 
+def style_distance(a: np.ndarray, b: np.ndarray) -> float:
+    """0..1: cosine distance of two style profiles, saturating at STYLE_SCALE."""
+    den = float(np.linalg.norm(a) * np.linalg.norm(b))
+    cos = float(a @ b) / den if den > 0 else 0.0
+    return min(1.0, max(0.0, 1.0 - cos) / STYLE_SCALE)
+
+
 def distance(a: Norm, b: Norm) -> float:
     tempo = min(1.0, octave_distance(a.bpm_folded, b.bpm_folded) / TEMPO_SCALE)
     ratio = max(a.bpm_raw, b.bpm_raw) / max(1e-6, min(a.bpm_raw, b.bpm_raw))
     octave = HALF_DOUBLE_PENALTY if ratio > 1.6 else 0.0
-    return float(W_TEMPO * tempo + W_GROOVE * _rms(a.groove, b.groove)
-                 + W_TONE * _rms(a.tone, b.tone) + W_TIMBRE * _rms(a.timbre, b.timbre) + octave)
+    dsp = (W_TEMPO * tempo + W_GROOVE * _rms(a.groove, b.groove)
+           + W_TONE * _rms(a.tone, b.tone) + W_TIMBRE * _rms(a.timbre, b.timbre))
+    if a.style is None or b.style is None:
+        return float(dsp / _DSP + octave)
+    return float(dsp + W_STYLE * style_distance(a.style, b.style) + octave)
 
 
 def compute_d_ref(norms: list[Norm], vibes: list[Vibe]) -> float:

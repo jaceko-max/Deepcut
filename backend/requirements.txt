@@ -5,3 +5,4 @@ pydantic>=2.7
 numpy>=2.0
 scipy>=1.13
 miniaudio>=1.60
+onnxruntime>=1.20

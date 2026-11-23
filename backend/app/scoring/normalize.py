@@ -37,6 +37,7 @@ class Norm:
     groove: np.ndarray  # pulse_clarity, onset_density, regularity, syncopation, pulse_stability
     tone: np.ndarray    # centroid, rolloff, bass, sub, rms, dynamics, flatness
     timbre: np.ndarray  # 24 robust-scaled MFCC stats
+    style: np.ndarray | None = None  # L2-normalised sqrt of Discogs-EffNet style activations (None: no model)
 
     def summary(self, bpm: float | None = None) -> dict:
         g, t = self.groove, self.tone
@@ -74,4 +75,14 @@ def normalize(raw: dict, scaler: MfccScaler) -> Norm:
     tone = np.array([_n(raw, "centroid_log2"), _n(raw, "rolloff_log2"), _n(raw, "bass_ratio"),
                      _n(raw, "sub_ratio"), _n(raw, "rms_mean_db"), _n(raw, "dynamic_range_db"),
                      _n(raw, "flatness")])
-    return Norm(raw["bpm_raw"], raw["bpm_folded"], groove, tone, scaler.transform(raw["mfcc"]))
+    return Norm(raw["bpm_raw"], raw["bpm_folded"], groove, tone, scaler.transform(raw["mfcc"]), style_vector(raw.get("style")))
+
+
+def style_vector(act) -> np.ndarray | None:
+    """Mean style activations (400 Discogs styles, sigmoid) -> unit vector of their square roots, which
+    lets the many small activations count (a Hellinger-style comparison of two style profiles)."""
+    if not act:
+        return None
+    v = np.sqrt(np.maximum(np.asarray(act, dtype=float), 0.0))
+    n = float(np.linalg.norm(v))
+    return v / n if n > 0 else None

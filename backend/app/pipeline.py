@@ -16,6 +16,7 @@ import httpx
 import numpy as np
 
 from app.audio.decode import AudioError
+from app.audio.embed import enabled as embed_enabled
 from app.audio.features import FEATURE_VERSION
 from app.audio.worker import AnalysisPool, analyze_async
 from app.cache import Cache
@@ -340,11 +341,12 @@ class Pipeline:
         self._ticks: dict[str, int] = {}
         # In-process instrumentation for benchmarks (scratch scripts set a dict); never part of API output.
         self.trace: dict | None = None
+        self._want_style = embed_enabled()  # cached clips without the style profile are re-analysed
 
     # -- audio features -------------------------------------------------
     async def _features(self, key: str, url: str) -> dict | None:
         hit = await self.s.cache.get_features(key)
-        if hit and hit.get("version") == FEATURE_VERSION:
+        if hit and hit.get("version") == FEATURE_VERSION and (hit.get("style") or not self._want_style):
             return hit
         try:
             async with self.dl_sem:

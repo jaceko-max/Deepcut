@@ -1,12 +1,17 @@
-"""Raw feature extraction (FEATURE_VERSION=1). numpy/scipy only."""
+"""Raw feature extraction: numpy/scipy DSP features plus, when the model is available, the learned
+Discogs-EffNet style profile (app/audio/embed.py)."""
 from __future__ import annotations
+
+import logging
 
 import numpy as np
 
-from app.audio import dsp
+from app.audio import dsp, embed
 from app.audio.decode import SR, AudioError, decode_audio
 
-FEATURE_VERSION = 1
+log = logging.getLogger("deepcut.features")
+
+FEATURE_VERSION = 2  # 2: adds "style" (400 Discogs style activations) when embeddings are enabled
 MIN_SECONDS = 10.0
 SYNC_WEIGHTS = {0: 0.0, 2: 0.5, 1: 1.0, 3: 1.0}
 
@@ -118,5 +123,11 @@ def extract_from_samples(y: np.ndarray) -> dict:
     return out
 
 
-def extract_features(data: bytes) -> dict:
-    return extract_from_samples(decode_audio(data))
+def extract_features(data: bytes, with_style: bool | None = None) -> dict:
+    out = extract_from_samples(decode_audio(data))
+    if embed.enabled() if with_style is None else with_style:
+        try:
+            out["style"] = embed.style_from_samples(decode_audio(data, embed.SR))
+        except Exception:  # noqa: BLE001 - the DSP features alone still score the clip
+            log.exception("style model failed; using DSP features only for this clip")
+    return out
