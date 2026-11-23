@@ -6,7 +6,7 @@ Paste a public Spotify playlist and Deepcut works out what its tracks feel like 
 
 ## How it works
 
-1. **Read the playlist.** Spotify's embed page gives the track list and a 30-second preview MP3 per track. Up to 40 tracks are sampled, spread across artists.
+1. **Read the playlist.** Spotify's embed page gives the track list and a 30-second preview MP3 per track. **Apple Music** public playlist links (`music.apple.com/<cc>/playlist/…/pl.…`) work too: the share page lists titles and artists (no audio, no token needed), and Deezer supplies the previews, as for pasted tracks. Up to 40 tracks are sampled, spread across artists.
 2. **Listen.** Each preview is decoded and analysed with plain numpy and scipy (no librosa): tempo with octave-aware folding, pulse clarity, beat regularity, syncopation, onset density, spectral balance and 12 MFCC coefficients, with mean and standard deviation. A pretrained network (Essentia's Discogs-EffNet, run with onnxruntime on CPU) also listens to six 2-second windows and gives a profile over 400 Discogs music styles, which captures sound and production far better than MFCCs. The same pass feeds Essentia's small **mood heads** (relaxed, sad, happy, aggressive, party, acoustic, electronic, danceable, voice/instrumental, bright/dark, approachability, engagement, plus 56 mood/theme tags) at almost no extra cost (~2 ms and ~4 MB). A clip takes about 0.2 s.
 3. **Find your vibes.** Tracks are clustered (k-means, 1 to 3 clusters, chosen by silhouette) so a playlist that mixes 90 BPM slow burners and 124 BPM dance tracks becomes two vibes, not one muddy average. Each vibe is named by its mood, e.g. "late-night · mellow · sensual" (mood words come from the mood heads, relative to a broad reference set of songs and, with several vibes, to the rest of the playlist).
 4. **Gather candidates.** Last.fm's similar-artist, similar-track and tag graphs, plus ListenBrainz co-listening "similar artists", are walked from your main (primary, non-soundtrack) artists and the tracks closest to each vibe. Artists found by both sources, or by several of your artists, rank higher.
@@ -18,6 +18,8 @@ Paste a public Spotify playlist and Deepcut works out what its tracks feel like 
 10. **Deep cuts from artists you like.** For up to 8 of your playlist's main artists (at least 2 tracks each), Deepcut also looks for their lesser-known songs: tracks outside the artist's 5 biggest on Deezer with at most 30% of the Last.fm listeners of the artist's most-listened track (Deezer's popularity rank is the fallback when Last.fm has no track list), not in your playlist, not a live/remix/sped-up/holiday version and not another version of a hit. Up to 3 per artist are analysed and scored the same way. About a third of the list (7 of 20) are these deep cuts, at most 2 per artist, scored, mood-checked and floored like everything else. The listener cap doesn't apply to them, because the artist is known and only the track is obscure. They're marked "Deep cut" in the results.
 11. **Explain.** Every result says why it matched, mood first, for example "Same late-night/sensual mood, same 92 BPM pocket; shared tags: rnb" or "Deep cut from Don Toliver · Same groovy mood, near your 112 BPM".
 
+**Why it's faster.** Clip analysis (the CPU-bound part, which dominates on Render's free tier) no longer waits for every Last.fm and Deezer lookup: candidate clips are analysed as soon as their artist passes the listener cap and genre check, deep-cut clips as soon as they are found, and Last.fm data for the playlist's main artists is prefetched while the playlist audio is analysed. Each clip is downloaded and analysed once (in-flight deduplication), within the same 72-clip budget.
+
 ## Features
 
 - **Paste tracks instead of a link.** The form has a "Spotify link | Paste tracks" switch. Paste one track per line as `Artist - Title` or `Title by Artist`, or a CSV exported by Exportify (`"Track Name"`, `"Artist Name(s)"`). Up to 200 tracks, with a live line counter. Pasted tracks have no previews, so Deezer matching finds the audio, and the 100-track embed limit no longer applies.
@@ -28,7 +30,7 @@ Paste a public Spotify playlist and Deepcut works out what its tracks feel like 
 
 ## API
 
-- `POST /api/analyze` takes `{playlist_url | tracks: [{artist, title}], max_listeners?, limit?}`. Exactly one of `playlist_url` or `tracks` (1 to 200 items, artist up to 200 and title up to 300 characters) is required, otherwise `400 invalid_request`. Returns `202 {job_id, status, poll_url}`. The request body limit is 64 KB (it was 16 KB) so 200 pasted lines fit.
+- `POST /api/analyze` takes `{playlist_url | tracks: [{artist, title}], max_listeners?, limit?}`. `playlist_url` is a Spotify or an Apple Music playlist link (`playlist.source` is then `apple_music`; Apple pages may list only their first ~50-100 tracks). Exactly one of `playlist_url` or `tracks` (1 to 200 items, artist up to 200 and title up to 300 characters) is required, otherwise `400 invalid_request`. Returns `202 {job_id, status, poll_url}`. The request body limit is 64 KB (it was 16 KB) so 200 pasted lines fit.
 - `GET /api/jobs/{id}` returns the job. `playlist.source` is `spotify_api`, `spotify_embed` or `pasted`. When done, `results` holds the list (it can be shorter than `limit` when fewer candidates pass the quality floor; a warning then says so) and the optional `reserve` (default `[]`) holds up to ~40 more analyzed candidates that passed the same filters, same shape as `results`, with `rank` continuing after the list and one per artist where possible. Each result has an optional `tier` (`deep_cut`, `rising` or `underground`; absent in older payloads).
 - `GET /api/preview/{deezer_id}?sig=…` redirects to a fresh preview.
 
@@ -74,6 +76,8 @@ render.yaml  Render blueprint for the backend
 ### Caveat: playlist reading is unofficial
 
 Spotify's Web API no longer returns the tracks of other users' public playlists to new apps, so Deepcut reads playlists from Spotify's **public embed page** (`open.spotify.com/embed/playlist/{id}`), which needs no login. This is unofficial and undocumented. It can break or be rate limited at any time, it only exposes roughly the first 50 to 100 tracks, and playlists must be public. If it stops working, the playlist step is the only part affected; the code lives in `backend/app/clients/spotify.py`.
+
+The Apple Music reader parses the public share page's `serialized-server-data` JSON the same way, so it can break if Apple changes that page.
 
 ## Local development
 

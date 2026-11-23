@@ -20,6 +20,7 @@ from app.audio.embed import enabled as embed_enabled, moods_enabled
 from app.audio.features import FEATURE_VERSION
 from app.audio.worker import AnalysisPool, analyze_async
 from app.cache import Cache
+from app.clients.apple import AppleMusicClient
 from app.clients.deezer import DeezerClient, DeezerTrack, deezer_body_rate_limited
 from app.clients.http import HttpClient, UpstreamError
 from app.clients.lastfm import LastfmClient
@@ -88,6 +89,7 @@ DEEZER_FAN_SLACK = 2.0     # reject when Deezer nb_fan > 2x the listener cap
 TRACKS_PER_ARTIST = 5      # Deezer tracks fetched per candidate artist (after filters)
 CLIPS_PER_ARTIST = 2       # analyzed per artist when the budget allows
 MAX_CANDIDATE_CLIPS = 72  # was 80; the lower 15K floor keeps more artists, this holds cold-search time
+WARM_ARTISTS = 15          # playlist artists whose Last.fm data is prefetched during playlist audio analysis
 SEED_TRACKS = 12           # track.getSimilar seeds (often empty for new releases; ListenBrainz covers)
 # "Deep cuts": lesser-known tracks by the playlist's own core artists (the listener cap does not apply:
 # the artist is known, the track is what's obscure).
@@ -165,6 +167,7 @@ class Services:
     client: httpx.AsyncClient
     preview_deezer: DeezerClient | None = None  # separate Deezer bucket for /api/preview lookups
     listenbrainz: ListenBrainzClient | None = None
+    apple: AppleMusicClient | None = None
 
     async def aclose(self) -> None:
         await self.client.aclose()
@@ -184,7 +187,7 @@ def build_services(settings: Settings) -> Services:
     return Services(settings, cache, SpotifyClient(plain, settings),
                     LastfmClient(lfm, cache, settings.lastfm_api_key), DeezerClient(dz, cache),
                     plain, AnalysisPool(settings.analysis_workers), client, DeezerClient(dz_preview, cache),
-                    ListenBrainzClient(lb, cache))
+                    ListenBrainzClient(lb, cache), AppleMusicClient(plain))
 
 
 def sample_tracks(tracks: list[PlaylistTrack], n: int = SAMPLE_SIZE, seed: int = 42) -> list[PlaylistTrack]:
@@ -410,14 +413,71 @@ class Pipeline:
         self.dl_sem = asyncio.Semaphore(8)
         self._ticks: dict[str, int] = {}
         self.pasted: list[dict] | None = None  # pasted track list instead of a Spotify playlist
+        self.apple: tuple[str, str] | None = None  # (storefront, playlist id) of an Apple Music playlist
         # In-process instrumentation for benchmarks (scratch scripts set a dict); never part of API output.
         self.trace: dict | None = None
         self._want_style = embed_enabled()  # cached clips without the style profile are re-analysed
         self._want_mood = moods_enabled()
         self._vibe_words: dict[int, list[str]] = {}   # ...and, with the mood heads installed, without mood outputs
+        # Clip analysis is deduplicated by cache key and can start early (prefetch) so the CPU-bound work
+        # overlaps the rate-limited Last.fm/Deezer lookups instead of waiting for them to finish.
+        self._inflight: dict[str, asyncio.Task] = {}
+        self._prefetched = 0
+        self._bg: set[asyncio.Task] = set()
 
     # -- audio features -------------------------------------------------
+    def _clip_task(self, key: str, url: str) -> asyncio.Task:
+        task = self._inflight.get(key)
+        if task is None:
+            task = self._inflight[key] = asyncio.ensure_future(self._features_work(key, url))
+        return task
+
     async def _features(self, key: str, url: str) -> dict | None:
+        return await asyncio.shield(self._clip_task(key, url))
+
+    def _spawn(self, coro) -> asyncio.Task:
+        t = asyncio.ensure_future(coro)
+        self._bg.add(t)
+        t.add_done_callback(self._bg.discard)
+        return t
+
+    def _prefetch_clips(self, tracks: list[DeezerTrack]) -> None:
+        """Start analysing candidate clips now, within the MAX_CANDIDATE_CLIPS budget. Results land in the
+        feature cache and the in-flight table, so the final analysis stage just picks them up."""
+        for t in tracks:
+            key = f"dz:{t.id}:v{FEATURE_VERSION}"
+            if key in self._inflight or self._prefetched >= MAX_CANDIDATE_CLIPS:
+                continue
+            self._prefetched += 1
+            self._clip_task(key, t.preview_url)
+
+    async def _prefetch_artist(self, dz_task: asyncio.Task) -> None:
+        try:
+            self._prefetch_clips((await asyncio.shield(dz_task))[:CLIPS_PER_ARTIST])
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001 - prefetch is an optimisation only
+            return
+
+    async def _warm_lastfm(self, tracks: list[PlaylistTrack]) -> None:
+        """While the playlist audio is analysed, fetch the Last.fm data the next stage will ask for (similar
+        artists, tags, listener counts for the most frequent artists) into the cache."""
+        counts = Counter(t.primary_artist for t in tracks if t.primary_artist and not NON_ARTIST.search(t.primary_artist)
+                         and not artist_is_tribute(t.primary_artist))
+        order = sorted(counts, key=lambda a: -counts[a])[:WARM_ARTISTS]  # stable: playlist order breaks ties
+        sem = asyncio.Semaphore(4)
+
+        async def one(a: str):
+            async with sem:
+                lf = self.s.lastfm
+                for call in (lambda: lf.artist_similar(a, 50, with_mbid=True), lambda: lf.artist_top_tags(a),
+                             lambda: lf.artist_info(a)):
+                    try:
+                        await call()
+                    except UpstreamError:
+                        pass
+
+        await asyncio.gather(*(one(a) for a in order), return_exceptions=True)
+
+    async def _features_work(self, key: str, url: str) -> dict | None:
         hit = await self.s.cache.get_features(key)
         if (hit and hit.get("version") == FEATURE_VERSION and (hit.get("style") or not self._want_style)
                 and (hit.get("mood") or not self._want_mood)):
@@ -466,6 +526,8 @@ class Pipeline:
         finally:
             if self._dc_task:
                 self._dc_task.cancel()
+            for t in [*self._bg, *self._inflight.values()]:
+                t.cancel()
 
     async def _run(self) -> None:
         rep, s = self.rep, self.s
@@ -478,14 +540,19 @@ class Pipeline:
         marks: dict[str, float] = {}
         rep.stage("fetching_playlist", 0.01, "Reading playlist")
         try:
-            data: PlaylistData = (pasted_playlist(self.pasted) if self.pasted
-                                  else await s.spotify.fetch_playlist(self.pid))
+            if self.pasted:
+                data: PlaylistData = pasted_playlist(self.pasted)
+            elif self.apple:
+                data = await s.apple.fetch_playlist(*self.apple)
+            else:
+                data = await s.spotify.fetch_playlist(self.pid)
         except PlaylistNotFound:
             raise PipelineError("playlist_not_found", "Playlist not found. Make sure it is public.")
         except PlaylistUnavailable as e:
             raise PipelineError("playlist_unavailable", "Could not read this playlist. Make sure it is public and try again.", str(e))
         except UpstreamError as e:
-            raise PipelineError("upstream_error", "Spotify is not responding. Please try again in a minute.", str(e))
+            raise PipelineError("upstream_error", f"{'Apple Music' if self.apple else 'Spotify'} is not responding. "
+                                "Please try again in a minute.", str(e))
         tracks = data.tracks[:MAX_PLAYLIST_TRACKS]
         if not tracks:
             raise PipelineError("playlist_empty", "This playlist has no tracks.")
@@ -493,6 +560,9 @@ class Pipeline:
         playlist_artists = {norm_name(a) for t in tracks for a in t.artists if a}
         playlist_titles = {norm_title(t.title) for t in tracks}
         rep.stage("fetching_playlist", 0.05, f"Found {len(tracks)} tracks")
+
+        # Last.fm data for the playlist's main artists is fetched in the background while the audio is analysed
+        warm = self._spawn(self._warm_lastfm(tracks))
 
         # 2. audio sources for playlist tracks
         rep.stage("matching_previews", 0.05, "Finding previews")
@@ -514,6 +584,7 @@ class Pipeline:
         raws = await self._gather_progress([self._features(k, u) for _, k, u in usable],
                                            "analyzing_playlist", 0.15, 0.45, "Analyzing track")
         pl = [(t, r) for (t, _, _), r in zip(usable, raws) if r]
+        warm.cancel()  # whatever it fetched is cached; the real lookups below take over (no duplicate calls)
         if len(pl) < 5:
             raise PipelineError("no_previews", "Not enough tracks with audio previews to analyze (need at least 5).")
         if len(pl) < 15:
@@ -547,6 +618,11 @@ class Pipeline:
         allowed = allowed_categories([t.title for t in tracks])
         # Deep cuts (Deezer + one cached Last.fm call per core artist) run alongside the candidate search.
         dc_task = self._dc_task = asyncio.create_task(self._deep_cuts(deep_cut_artists(counts), tracks, allowed))
+
+        def prefetch_deep(t: asyncio.Task) -> None:
+            if not t.cancelled() and t.exception() is None:
+                self._prefetch_clips([tr for _, ts in t.result() for tr in ts])
+        dc_task.add_done_callback(prefetch_deep)
         floor = min_listeners(self.max_listeners)
         cap = self.max_listeners
         profiles = await self._tag_profiles(counts, seeds, pl, vibes)
@@ -705,6 +781,7 @@ class Pipeline:
                     dz_tasks.pop(id(c)).cancel()
                     continue
                 keep.append(c)
+                self._spawn(self._prefetch_artist(dz_tasks[id(c)]))  # analyse its clips while lookups continue
 
         def n_under() -> int:
             return sum(1 for c in keep if popularity_tier(c.listeners, cap) == "underground")
@@ -1247,7 +1324,8 @@ class Pipeline:
 
 
 async def run_analysis(svc: Services, playlist_id: str | None, max_listeners: int, limit: int, rep: Reporter,
-                       tracks: list[dict] | None = None) -> None:
-    p = Pipeline(svc, playlist_id or "", max_listeners, limit, rep)
+                       tracks: list[dict] | None = None, apple: tuple[str, str] | None = None) -> None:
+    p = Pipeline(svc, playlist_id or (apple[1] if apple else ""), max_listeners, limit, rep)
     p.pasted = tracks
+    p.apple = apple
     await p.run()

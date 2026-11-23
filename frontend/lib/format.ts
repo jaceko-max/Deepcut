@@ -31,6 +31,18 @@ export function formatPercent(share: number): string {
   return `${Math.round(share * 100)}%`;
 }
 
+/** Public Apple Music playlist share link: music.apple.com/<cc>/playlist/<name>/pl.<id>. */
+export const APPLE_PLAYLIST_REGEX = /^(?:https?:\/\/)?music\.apple\.com\/[a-z]{2}\/playlist\/(?:[^/?#]+\/)?pl\.[A-Za-z0-9-]{8,64}(?:[/?#].*)?$/i;
+
+export function isApplePlaylistUrl(input: string): boolean {
+  return APPLE_PLAYLIST_REGEX.test(input.trim());
+}
+
+/** True for anything the backend can read: a Spotify link/URI/ID or an Apple Music playlist link. */
+export function isPlaylistLink(input: string): boolean {
+  return isApplePlaylistUrl(input) || parsePlaylistId(input) !== null;
+}
+
 export const PLAYLIST_REGEX = /(?:playlist[/:])?([A-Za-z0-9]{22})/;
 
 /** Returns the 22-char playlist id or null. Rejects obviously non-playlist input. */

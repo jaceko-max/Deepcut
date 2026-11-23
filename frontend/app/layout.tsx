@@ -8,7 +8,7 @@ const body = Hanken_Grotesk({ subsets: ["latin"], variable: "--font-body", displ
 export const metadata: Metadata = {
   title: "Deepcut: find the underground version of your playlist",
   description:
-    "Paste a Spotify playlist. Deepcut matches its beat flow (tempo, groove, low end) to tracks from artists almost nobody has heard.",
+    "Paste a Spotify or Apple Music playlist. Deepcut matches its beat flow (tempo, groove, low end) to tracks from artists almost nobody has heard.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.clients.http import UpstreamError
+from app.clients.apple import parse_apple_playlist
 from app.clients.spotify import parse_playlist_id
 from app.config import VERSION, Settings
 from app.jobs import JobRunner, JobStore, ServerBusy
@@ -183,11 +184,13 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
 
     @app.post("/api/analyze", status_code=202, response_model=AnalyzeResponse)
     async def analyze(body: AnalyzeRequest, request: Request):
-        pid = None
+        pid, apple = None, None
         if body.tracks is None:
-            pid = parse_playlist_id(body.playlist_url or "")
-            if not pid:
-                raise ApiError(400, "invalid_playlist_url", "That doesn't look like a Spotify playlist link.")
+            apple = parse_apple_playlist(body.playlist_url or "")
+            pid = None if apple else parse_playlist_id(body.playlist_url or "")
+            if not pid and not apple:
+                raise ApiError(400, "invalid_playlist_url",
+                               "That doesn't look like a Spotify or Apple Music playlist link.")
         store: JobStore = request.app.state.store
         if store.queued_count() >= settings.max_queued_jobs:
             raise ApiError(503, "server_busy", "The server is busy right now. Please try again in a minute.", {"Retry-After": "30"})
@@ -210,7 +213,8 @@ def create_app(settings: Settings | None = None, services: Services | None = Non
             pasted = [t.model_dump() for t in body.tracks]
             work = lambda rep: run_analysis(svc, None, body.max_listeners, body.limit, rep, tracks=pasted)  # noqa: E731
         else:
-            work = lambda rep: run_analysis(svc, pid, body.max_listeners, body.limit, rep)  # noqa: E731
+            extra = {"apple": apple} if apple else {}
+            work = lambda rep: run_analysis(svc, pid, body.max_listeners, body.limit, rep, **extra)  # noqa: E731
         request.app.state.runner.submit(job.job_id, work)
         return AnalyzeResponse(job_id=job.job_id, poll_url=f"/api/jobs/{job.job_id}")
 

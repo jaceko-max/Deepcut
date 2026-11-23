@@ -1,5 +1,5 @@
 const COPY: Record<string, { title: string; body: string }> = {
-  invalid_playlist_url: { title: "That link isn't a playlist", body: "Paste a link like open.spotify.com/playlist/… or a 22-character playlist ID." },
+  invalid_playlist_url: { title: "That link isn't a playlist", body: "Paste a Spotify link (open.spotify.com/playlist/…) or an Apple Music link (music.apple.com/…/playlist/…)." },
   invalid_request: { title: "Something was off in the request", body: "Check the playlist link and settings, then try again." },
   too_many_jobs: { title: "Slow down a moment", body: "You've started a few searches already. Try again in a few minutes." },
   server_busy: { title: "The crates are crowded", body: "Lots of searches are queued right now. Try again in a minute." },
@@ -12,7 +12,7 @@ const COPY: Record<string, { title: string; body: string }> = {
   playlist_empty: { title: "That playlist is empty", body: "Add some tracks to it, or try a different playlist." },
   no_previews: { title: "No audio to listen to", body: "Deepcut needs 30-second previews to hear the beat, and almost none were available for this playlist. Try another one." },
   no_candidates: { title: "No underground matches", body: "Nothing under the listener cap fit this playlist. Raise the cap and try again." },
-  upstream_error: { title: "A music service is struggling", body: "Spotify, Deezer or Last.fm didn't respond properly. Try again shortly." },
+  upstream_error: { title: "A music service is struggling", body: "Spotify, Apple Music, Deezer or Last.fm didn't respond properly. Try again shortly." },
   internal_error: { title: "Deepcut tripped", body: "Something broke on our side. Try again; if it keeps happening, try a different playlist." },
   share_invalid: { title: "This share link is broken", body: "The link may have been cut short when it was copied. Ask for it again, or run your own search." },
   network_error: { title: "Can't reach the server", body: "Check your connection and try again. If the server was asleep, it may need another minute." },

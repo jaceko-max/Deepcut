@@ -1,7 +1,7 @@
 "use client";
 
 import { useId, useMemo, useState } from "react";
-import { parsePlaylistId } from "@/lib/format";
+import { isPlaylistLink } from "@/lib/format";
 import { MAX_PASTED_TRACKS, MIN_PASTED_TRACKS, parseTracks } from "@/lib/paste";
 import { SLIDER_DEFAULT, sliderToListeners } from "@/lib/slider";
 import type { AnalyzeRequest } from "@/lib/types";
@@ -39,9 +39,10 @@ export function AnalyzeForm({
     e.preventDefault();
     const base = { max_listeners: sliderToListeners(t), limit };
     if (mode === "link") {
-      const id = parsePlaylistId(url);
-      if (!id) {
-        setError("That doesn't look like a Spotify playlist link. Paste a link like open.spotify.com/playlist/… or a playlist ID.");
+      if (!isPlaylistLink(url)) {
+        setError(
+          "That doesn't look like a Spotify or Apple Music playlist link. Paste a link like open.spotify.com/playlist/… or music.apple.com/…/playlist/….",
+        );
         return;
       }
       setError(null);
@@ -69,7 +70,7 @@ export function AnalyzeForm({
         <div className="inline-flex rounded-lg border border-line p-1" role="radiogroup" aria-label="Playlist source">
           {(
             [
-              ["link", "Spotify link"],
+              ["link", "Spotify / Apple Music link"],
               ["paste", "Paste tracks"],
             ] as const
           ).map(([m, label]) => (
@@ -96,7 +97,7 @@ export function AnalyzeForm({
       {mode === "link" ? (
         <div>
           <label htmlFor="playlist" className="font-medium">
-            Spotify playlist link
+            Spotify or Apple Music playlist link
           </label>
           <input
             id="playlist"
@@ -104,7 +105,7 @@ export function AnalyzeForm({
             inputMode="url"
             autoComplete="off"
             spellCheck={false}
-            placeholder="https://open.spotify.com/playlist/…"
+            placeholder="https://open.spotify.com/playlist/… or https://music.apple.com/…/playlist/…"
             value={url}
             onChange={(e) => {
               setUrl(e.target.value);
@@ -119,7 +120,7 @@ export function AnalyzeForm({
               {error}
             </p>
           ) : (
-            <p className="mt-2 text-sm text-muted">The playlist must be public.</p>
+            <p className="mt-2 text-sm text-muted">The playlist must be public. Apple Music: Share → Copy Link.</p>
           )}
         </div>
       ) : (

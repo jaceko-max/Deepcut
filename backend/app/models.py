@@ -87,7 +87,7 @@ class PlaylistInfoOut(BaseModel):
     image_url: str | None = None
     total_tracks: int
     analyzed_tracks: int
-    source: Literal["spotify_api", "spotify_embed", "pasted"]
+    source: Literal["spotify_api", "spotify_embed", "apple_music", "pasted"]
 
 
 class Result(BaseModel):

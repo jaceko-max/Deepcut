@@ -65,7 +65,7 @@ export interface PlaylistInfo {
   image_url: string | null;
   total_tracks: number;
   analyzed_tracks: number;
-  source: "spotify_api" | "spotify_embed" | "pasted";
+  source: "spotify_api" | "spotify_embed" | "apple_music" | "pasted";
 }
 
 export interface PlaylistProfile {

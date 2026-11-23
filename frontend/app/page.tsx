@@ -108,7 +108,7 @@ export default function Home() {
                 Dig past the algorithm.
               </h1>
               <p className="max-w-xl text-lg text-muted">
-                Paste a Spotify playlist or a list of tracks. Deepcut listens to its beat flow (tempo, groove, low end) and finds tracks that
+                Paste a Spotify or Apple Music playlist, or a list of tracks. Deepcut listens to its beat flow (tempo, groove, low end) and finds tracks that
                 move the same way from artists almost nobody has heard.
               </p>
             </section>

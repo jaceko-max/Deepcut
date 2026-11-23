@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatBpm, formatCompact, parsePlaylistId, tierBadge } from "./format";
+import { formatBpm, formatCompact, isApplePlaylistUrl, isPlaylistLink, parsePlaylistId, tierBadge } from "./format";
 
 describe("tierBadge", () => {
   it("labels rising and underground picks, nothing otherwise", () => {
@@ -43,5 +43,23 @@ describe("parsePlaylistId", () => {
     expect(parsePlaylistId("")).toBeNull();
     expect(parsePlaylistId("hello")).toBeNull();
     expect(parsePlaylistId(`https://open.spotify.com/album/${id}`)).toBeNull();
+  });
+});
+
+describe("Apple Music links", () => {
+  const apple = "https://music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb";
+  it("accepts public playlist share links", () => {
+    expect(isApplePlaylistUrl(apple)).toBe(true);
+    expect(isApplePlaylistUrl(`${apple}?l=en-US`)).toBe(true);
+    expect(isApplePlaylistUrl("music.apple.com/gb/playlist/pl.u-AbCd1234-xYz")).toBe(true);
+    expect(isPlaylistLink(apple)).toBe(true);
+  });
+  it("rejects other Apple Music links and look-alike hosts", () => {
+    expect(isApplePlaylistUrl("https://music.apple.com/us/album/x/12345")).toBe(false);
+    expect(isApplePlaylistUrl("https://music.apple.com.evil.example/us/playlist/x/pl.f4d106fed2bd41149aaacabb233eb5eb")).toBe(false);
+    expect(isPlaylistLink("https://example.com/hello")).toBe(false);
+  });
+  it("still accepts Spotify links", () => {
+    expect(isPlaylistLink("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M")).toBe(true);
   });
 });
