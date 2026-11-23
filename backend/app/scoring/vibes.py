@@ -8,7 +8,7 @@ import numpy as np
 
 from app.scoring.normalize import Norm
 
-W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.10, 0.20, 0.35, 0.35  # keep in sync with score.py
+W_TEMPO, W_GROOVE, W_TONE, W_TIMBRE = 0.10, 0.20, 0.35, 0.35  # relative DSP weights, as in score.py (clustering is DSP-only)
 TEMPO_NORM = 0.908
 
 
@@ -107,8 +107,10 @@ def centroid_of(norms: list[Norm]) -> Norm:
     mean_th = math.atan2(np.sin(th).mean(), np.cos(th).mean())
     bpm = angle_to_bpm(mean_th)
     raw = float(np.median([n.bpm_raw for n in norms]))  # unfolded: lets distance() spot half/double time
+    styles = [n.style for n in norms if n.style is not None]
     return Norm(raw, bpm, np.mean([n.groove for n in norms], 0),
-                np.mean([n.tone for n in norms], 0), np.mean([n.timbre for n in norms], 0))
+                np.mean([n.tone for n in norms], 0), np.mean([n.timbre for n in norms], 0),
+                np.mean(styles, 0) if styles else None)
 
 
 def build_vibes(norms: list[Norm]) -> list[Vibe]:

@@ -1,11 +1,18 @@
 """Deep cuts (lesser-known tracks by the playlist's own core artists) and the new-artist listener floor."""
 from collections import Counter
 
+import httpx
+import respx
+
+from app.cache import Cache
 from app.clients.deezer import DeezerTrack
+from app.clients.http import HttpClient
+from app.clients.lastfm import LastfmClient
 from app.clients.spotify import PlaylistTrack
 from app.models import AnalyzeRequest
-from app.pipeline import (DEEP_CUT_ARTISTS, DEEP_CUT_CLIPS, DEEP_CUT_PER_ARTIST, deep_cut_artists, deep_cut_slots,
-                          merge_deep_cuts, min_listeners, pick_deep_cuts, pick_seeds)
+from app.pipeline import (DEEP_CUT_ARTISTS, DEEP_CUT_CLIPS, DEEP_CUT_LFM_RATIO, DEEP_CUT_PER_ARTIST,
+                          LastfmPopularity, deep_cut_artists, deep_cut_slots, merge_deep_cuts, min_listeners,
+                          pick_deep_cuts, pick_seeds)
 from app.scoring.explain import MAX_LEN, deep_cut_why
 from app.scoring.score import Scored
 
@@ -129,3 +136,47 @@ def test_min_listener_floor():
 
 def test_default_listener_cap_is_500k():
     assert AnalyzeRequest(playlist_url="x").max_listeners == 500_000
+
+
+# --- Last.fm per-track popularity (artist.getTopTracks) ---------------------------------------------
+
+LFM_TOP = [("Swim Good", 360_000, 0), ("Thinkin Bout You", 1_000_000, 0), ("Provider", 220_000, 0),
+           ("Pretty Sweet", 310_000, 0)] + [(f"Filler {i}", 100_000 - i, 0) for i in range(10)]
+
+
+def test_lastfm_popularity_ratio_and_missing_titles():
+    pop = LastfmPopularity.build(LFM_TOP)
+    assert pop.top == 1_000_000
+    assert pop.ratio("Swim Good") == 0.36
+    assert pop.ratio("Provider (Remastered)") == 0.22          # decorations are stripped before matching
+    assert pop.ratio("Never Charted") == pop.floor / pop.top   # rarer than the list's last entry
+    assert LastfmPopularity.build(LFM_TOP[:3]) is None          # too few tracks to judge: Deezer fallback
+
+
+def test_pick_deep_cuts_uses_lastfm_listener_ratio():
+    top = [t(x, 800_000 - 10_000 * i, artist="Frank Ocean") for i, x in
+           enumerate(["Thinkin Bout You", "Pink", "Nikes", "Ivy", "Lost", "Swim Good", "Pretty Sweet", "Provider",
+                      "Filler 1"])]
+    pop = LastfmPopularity.build(LFM_TOP)
+    picks = [x.title for x in pick_deep_cuts("Frank Ocean", top, set(), set(), lfm=pop)]
+    # Swim Good (36% of the top track's listeners) and Pretty Sweet (31%) are too well known even though
+    # their Deezer rank is low; Provider (22%) and the filler qualify despite a high Deezer rank.
+    assert picks == ["Provider", "Filler 1"]
+    assert all(pop.ratio(p) <= DEEP_CUT_LFM_RATIO for p in picks)
+    # Without Last.fm data the Deezer rank rule (<= 60% of the best rank) applies: nothing qualifies here.
+    assert pick_deep_cuts("Frank Ocean", top, set(), set()) == []
+
+
+@respx.mock
+async def test_lastfm_artist_top_tracks_parses_and_caches(tmp_path):
+    route = respx.get("https://ws.audioscrobbler.com/2.0/", params={"method": "artist.getTopTracks"}).mock(
+        return_value=httpx.Response(200, json={"toptracks": {"track": [
+            {"name": "Thinkin Bout You", "listeners": "1000000", "playcount": "9000000"},
+            {"name": "Provider", "listeners": "220000", "playcount": "1500000"},
+            {"name": "Broken", "listeners": "n/a"}]}}))
+    async with httpx.AsyncClient() as c:
+        lf = LastfmClient(HttpClient(c), Cache(str(tmp_path / "c")), "k")
+        rows = await lf.artist_top_tracks("Frank Ocean")
+        assert rows == [("Thinkin Bout You", 1_000_000, 9_000_000), ("Provider", 220_000, 1_500_000)]
+        assert await lf.artist_top_tracks("Frank Ocean") == rows
+    assert route.call_count == 1

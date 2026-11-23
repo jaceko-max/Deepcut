@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import os
+
 import pytest
+
+# The offline suite is DSP-only and deterministic whether or not the style model is downloaded;
+# tests/test_embed.py opts in explicitly.
+os.environ.setdefault("EMBEDDINGS", "off")
 
 from app.clients import http as http_mod
 from app.config import Settings

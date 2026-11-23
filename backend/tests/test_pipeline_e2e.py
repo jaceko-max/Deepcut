@@ -345,3 +345,38 @@ async def test_deep_cuts_from_core_playlist_artist(settings, wavs):
     assert len(head) == len(set(head)), "every artist appears once before any artist repeats"
     assert [r.rank for r in job.results] == list(range(1, len(job.results) + 1))
     JobResponse.model_validate(job.model_dump(mode="json"))
+
+
+async def test_stale_deezer_preview_url_is_refreshed(settings, wavs):
+    """Cached Deezer search/top responses outlive their signed preview URLs (~15 min): a 403 on a
+    feature-cache miss re-fetches the track for a fresh URL instead of dropping the clip."""
+    from app.pipeline import Pipeline
+
+    svc = build_services(settings)
+    try:
+        with respx.mock(assert_all_called=True) as router:
+            router.get("https://cdnt-preview.dzcdn.net/stale.mp3").mock(return_value=httpx.Response(403))
+            router.get("https://api.deezer.com/track/55").mock(return_value=httpx.Response(200, json={
+                "id": 55, "title": "T", "preview": "https://cdnt-preview.dzcdn.net/fresh.mp3",
+                "artist": {"id": 1, "name": "A"}, "album": {"title": "B"}}))
+            router.get("https://cdnt-preview.dzcdn.net/fresh.mp3").mock(
+                return_value=httpx.Response(200, content=wavs["cand90"]))
+            p = Pipeline(svc, PID, 500_000, 10, None)
+            raw = await p._features("dz:55:v2", "https://cdnt-preview.dzcdn.net/stale.mp3")
+        assert raw and raw["bpm_raw"] > 0
+    finally:
+        await svc.aclose()
+
+
+def test_candidate_support_does_not_saturate():
+    from app.pipeline import Cand, candidate_support
+
+    one = Cand("One", hits=[(1.0, "similar_artist")], seed_aff={"a": 1.0}, origins={"lastfm"})
+    many = Cand("Many", hits=[(0.9, "similar_artist")], seed_aff={"a": 0.9, "b": 0.8, "lb:x": 0.7},
+                origins={"lastfm", "listenbrainz"})
+    assert one.affinity == 1.0 and many.affinity == 1.0  # tie under the capped affinity
+    w = {"a": 4, "b": 1}
+    assert candidate_support(many, w) > candidate_support(one, w)
+    assert candidate_support(one, w) == 2.0  # sqrt(4 playlist tracks) * 1.0
+    tag_only = Cand("Tag", hits=[(0.3, "tag")])
+    assert candidate_support(tag_only, w) == 0.3

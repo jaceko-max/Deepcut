@@ -99,5 +99,16 @@ class LastfmClient:
         name = a.get("name") if isinstance(a.get("name"), str) else None
         return listeners, mbid, name
 
+    async def artist_top_tracks(self, artist: str, limit: int = 200) -> list[tuple[str, int, int]]:
+        """[(title, listeners, playcount)] in Last.fm popularity order (one cached call, 7 days)."""
+        d = await self._call("artist.getTopTracks", artist=artist, limit=limit, autocorrect=1)
+        out = []
+        for t in _listify((d.get("toptracks") or {}).get("track")):
+            try:
+                out.append((t["name"], int(t.get("listeners") or 0), int(t.get("playcount") or 0)))
+            except (KeyError, ValueError, TypeError, AttributeError):
+                pass
+        return out
+
     async def artist_listeners(self, artist: str) -> int | None:
         return (await self.artist_info(artist))[0]
